@@ -1,6 +1,6 @@
 """Arg parsing for the main script."""
 from worker import disable_xformers
-from worker.argparser.framework import arg_parser
+from worker.argparser.framework import LazyArgs, arg_parser
 
 arg_parser.add_argument(
     "--sfw",
@@ -64,6 +64,8 @@ arg_parser.add_argument(
     help=("If specified this worker will not pick up controlnet jobs"),
 )
 
-args = arg_parser.parse_args()
+def _post_parse(parsed):
+    disable_xformers.toggle(parsed.disable_xformers)
 
-disable_xformers.toggle(args.disable_xformers)
+
+args = LazyArgs(arg_parser, post_parse=_post_parse)

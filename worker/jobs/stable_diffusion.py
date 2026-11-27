@@ -23,6 +23,7 @@ SIMULATE_KUDOS_LOCALLY = False
 
 
 class StableDiffusionHordeJob(HordeJobFramework):
+    submit_endpoint = "/api/v2/generate/submit"
     """Get and process a stable diffusion job from the horde"""
 
     def __init__(self, mm, bd, pop):
@@ -34,10 +35,16 @@ class StableDiffusionHordeJob(HordeJobFramework):
         self.r2_upload = None
         self.censored = False
         self.available_models = self.model_manager.get_loaded_models_names()
-        self.current_model = self.pop.get("model", self.available_models[0])
-        self.current_id = self.pop["id"]
-        self.current_payload = self.pop["payload"]
-        self.r2_upload = self.pop.get("r2_upload", False)
+        pop_model = self.pop.get("model") if isinstance(self.pop, dict) else None
+        if pop_model:
+            self.current_model = pop_model
+        elif self.available_models:
+            self.current_model = self.available_models[0]
+        else:
+            self.current_model = None
+        self.current_id = self.pop.get("id") if isinstance(self.pop, dict) else None
+        self.current_payload = self.pop.get("payload", {}) if isinstance(self.pop, dict) else {}
+        self.r2_upload = self.pop.get("r2_upload", False) if isinstance(self.pop, dict) else False
         self.clip_model = None
         self.hordelib = HordeLib()
         self.kudos_model = None
@@ -52,6 +59,10 @@ class StableDiffusionHordeJob(HordeJobFramework):
         super().start_job()
         if self.status == JobStatus.FAULTED:
             self.start_submit_thread()
+            return
+        if not self.current_model:
+            logger.error("No model available for job {}; faulting.", self.current_id)
+            self.fault(submit=True)
             return
         self.stale_time = time.time() + (self.current_payload.get("ddim_steps", 50) * 5) + 10
         if self.current_payload.get("control_type"):
@@ -73,10 +84,10 @@ class StableDiffusionHordeJob(HordeJobFramework):
             use_nsfw_censor = True
             censor_image = self.bridge_data.censor_image_sfw_worker
             censor_reason = "SFW worker"
-        censorlist_prompt = self.current_payload["prompt"]
+        censorlist_prompt = self.current_payload.get("prompt", "") if isinstance(self.current_payload, dict) else ""
         if "###" in censorlist_prompt:
             censorlist_prompt, _censorlist_negprompt = censorlist_prompt.split("###", 1)
-        if any(word in censorlist_prompt for word in self.bridge_data.censorlist):
+        if censorlist_prompt and any(word in censorlist_prompt for word in self.bridge_data.censorlist):
             use_nsfw_censor = True
             censor_image = self.bridge_data.censor_image_censorlist
             censor_reason = "Censorlist"
@@ -89,8 +100,10 @@ class StableDiffusionHordeJob(HordeJobFramework):
         source_processing = self.pop.get("source_processing")
         source_image = self.pop.get("source_image")
         source_mask = self.pop.get("source_mask")
-        model_baseline = self.model_manager.models[self.current_model].get("baseline")
+        model_baseline = self.model_manager.models.get(self.current_model, {}).get("baseline", "") or ""
         # These params will always exist in the payload from the horde
+        gen_payload = {}
+        req_type = source_processing or "txt2img"
         try:
             gen_payload = {
                 "prompt": self.current_payload["prompt"],
@@ -128,9 +141,7 @@ class StableDiffusionHordeJob(HordeJobFramework):
             if "tis" in self.current_payload:
                 gen_payload["tis"] = self.current_payload["tis"]
         except KeyError as err:
-            logger.error("Received incomplete payload from job. Aborting. ({})", err)
-            self.status = JobStatus.FAULTED
-            self.start_submit_thread()
+            self.fault(f"Received incomplete payload from job. Aborting. ({err})", submit=True)
             return
         # logger.debug(gen_payload)
         req_type = "txt2img"
@@ -139,14 +150,15 @@ class StableDiffusionHordeJob(HordeJobFramework):
                 req_type = "img2img"
             elif source_processing == "inpainting":
                 req_type = "inpainting"
+            elif source_processing == "outpainting":
+                req_type = "outpainting"
         # Reject jobs for pix2pix if not img2img
         if self.current_model in ["pix2pix"] and req_type != "img2img":
-            logger.error(
+            self.fault(
                 "Received an non-img2img request for Pix2Pix model. This shouldn't happen. "
                 f"Inform the developer. Current payload {self.pop}",
+                submit=True,
             )
-            self.status = JobStatus.FAULTED
-            self.start_submit_thread()
             return
         logger.debug(
             f"{req_type} ({self.current_model}) request with id {self.current_id} picked up. Initiating work...",
@@ -154,7 +166,7 @@ class StableDiffusionHordeJob(HordeJobFramework):
         if req_type == "inpainting" and source_mask is None:
             try:
                 if source_image.mode == "P":
-                    source_image.convert("RGBA")
+                    source_image = source_image.convert("RGBA")
                 _red, _green, _blue, _alpha = source_image.split()
             except ValueError:
                 logger.warning(
@@ -207,16 +219,15 @@ class StableDiffusionHordeJob(HordeJobFramework):
             if "OutOfMemoryError" in str(err):
                 logger.error(
                     "This machine ran out of memory when processing the request. "
-                    "You very likely need to reduce the max_power parameter in your config."
-                    "\nKeep in mind that you may run fine for long periods of time until a worst case job is run.",
-                    "\nHowever, If you are only seeing this error after very long periods of time, and you know "
+                    "You very likely need to reduce the max_power parameter in your config. "
+                    "Keep in mind that you may run fine for long periods of time until a worst case job is run. "
+                    "However, if you are only seeing this error after very long periods of time, and you know "
                     "you have enough memory ordinarily for a worst case job, it is possible that there may be a "
                     "memory leak. In that case, report this issue, along with your bridge.log, to the developers.",
                 )
-                self.status = JobStatus.OUT_OF_MEMORY
+                self.fault(status=JobStatus.OUT_OF_MEMORY, submit=True)
             else:
-                self.status = JobStatus.FAULTED
-            self.start_submit_thread()
+                self.fault(submit=True)
             return
 
         if self.image is None:
@@ -228,31 +239,55 @@ class StableDiffusionHordeJob(HordeJobFramework):
                 "Something went wrong when processing request and image was returned as None. "
                 f"Payload: {stack_payload}",
             )
-            self.status = JobStatus.FAULTED
-            self.start_submit_thread()
+            self.fault(submit=True)
             logger.warning(f"Rescue: Attempting to unload {self.current_model}")
             self.model_manager.unload_model(self.current_model)
             return
-        if use_nsfw_censor and is_image_nsfw(self.image):
-            logger.info(f"Image censored with reason: {censor_reason}")
-            self.image = censor_image
-            self.censored = "censored"
+        if use_nsfw_censor:
+            try:
+                if is_image_nsfw(self.image):
+                    logger.info(f"Image censored with reason: {censor_reason}")
+                    self.image = censor_image
+                    self.censored = "censored"
+            except Exception as err:
+                logger.error("NSFW censor check failed for job {}: {}. Faulting conservatively.", self.current_id, err)
+                logger.trace("".join(traceback.format_exception(type(err), err, err.__traceback__)))
+                self.fault(submit=True)
+                return
 
         # Run the CSAM Checker
-        if not self.censored:
-            is_csam, similarities, similarity_hits = csam.check_for_csam(
-                clip_model=self.clip_model,
-                image=self.image,
-                prompt=self.current_payload["prompt"],
-                model_info=self.model_manager.models[self.current_model],
-            )
-            if self.clip_model and is_csam:
-                logger.warning(f"Current values for id {self.current_id} would create CSAM. Censoring!")
-                self.image = self.bridge_data.censor_image_csam
-                self.censored = "csam"
+        if not self.censored and self.clip_model:
+            try:
+                is_csam, similarities, similarity_hits = csam.check_for_csam(
+                    clip_model=self.clip_model,
+                    image=self.image,
+                    prompt=self.current_payload.get("prompt", ""),
+                    model_info=self.model_manager.models.get(self.current_model, {}),
+                )
+                if is_csam:
+                    logger.warning(f"Current values for id {self.current_id} would create CSAM. Censoring!")
+                    self.image = self.bridge_data.censor_image_csam
+                    self.censored = "csam"
+            except Exception as err:
+                logger.error("CSAM check failed for job {}: {}. Faulting conservatively.", self.current_id, err)
+                logger.trace("".join(traceback.format_exception(type(err), err, err.__traceback__)))
+                self.fault(submit=True)
+                return
+
+        # Determine upload quality before loop: 45 if any ESRGAN upscaler post-processor is present, else 75
+        post_processors = self.current_payload.get("post_processing", [])
+        esrgan_upscalers = {
+            "RealESRGAN_x4plus",
+            "RealESRGAN_x2plus",
+            "RealESRGAN_x4plus_anime_6B",
+            "NMKD_Siax",
+            "4x_AnimeSharp",
+        }
+        has_esrgan = any(pp in esrgan_upscalers for pp in post_processors)
+        self.upload_quality = 95 if self.r2_upload else (45 if has_esrgan else 75)
 
         # Run Post-Processors
-        for post_processor in self.current_payload.get("post_processing", []):
+        for post_processor in post_processors:
             # Do not PP when censored
             if self.censored:
                 continue
@@ -260,18 +295,11 @@ class StableDiffusionHordeJob(HordeJobFramework):
             try:
                 strength = self.current_payload.get("facefixer_strength", 0.5)
                 self.image = post_process(post_processor, self.image, strength=strength)
-            except (AssertionError, RuntimeError) as err:
+            except Exception as err:
                 logger.warning(
                     "Post-Processor '{}' encountered an error when working on image . Skipping! {}",
                     post_processor,
                     err,
-                )
-            # Edit the webp upload quality if post-processor used
-            if self.r2_upload:
-                self.upload_quality = 95
-            else:
-                self.upload_quality = (
-                    45 if post_processor in ["RealESRGAN_x4plus", "RealESRGAN_x4plus_anime_6B"] else 75
                 )
         logger.debug("post-processing done...")
 
@@ -306,21 +334,30 @@ class StableDiffusionHordeJob(HordeJobFramework):
 
         self.start_submit_thread()
 
-    def submit_job(self, endpoint="/api/v2/generate/submit"):
+    def submit_job(self, endpoint=None):
         """Submits the job to the server to earn our kudos."""
-        super().submit_job(endpoint=endpoint)
+        super().submit_job(endpoint=self.submit_endpoint if endpoint is None else endpoint)
 
     def prepare_submit_payload(self):
         # images, seed, info, stats = txt2img(**self.current_payload)
         buffer = BytesIO()
         # We send as WebP to avoid using all the horde bandwidth
         self.image.save(buffer, format="WebP", quality=self.upload_quality, method=6)
+        generation = base64.b64encode(buffer.getvalue()).decode("utf8")
         if self.r2_upload:
-            put_response = requests.put(self.r2_upload, data=buffer.getvalue())
-            generation = "R2"
-            logger.debug("R2 Upload response: {}", put_response)
-        else:
-            generation = base64.b64encode(buffer.getvalue()).decode("utf8")
+            try:
+                put_response = self.session.put(self.r2_upload, data=buffer.getvalue(), timeout=60)
+                logger.debug("R2 Upload response: {}", put_response)
+                if put_response.ok:
+                    generation = "R2"
+                else:
+                    logger.warning(
+                        "R2 upload failed with status {}; falling back to inline upload. {}",
+                        put_response.status_code,
+                        put_response.text[:200],
+                    )
+            except requests.exceptions.RequestException as err:
+                logger.warning("R2 upload failed: {}; falling back to inline upload.", err)
         self.submit_dict = {
             "id": self.current_id,
             "generation": generation,
@@ -330,17 +367,11 @@ class StableDiffusionHordeJob(HordeJobFramework):
             self.submit_dict["state"] = self.censored
 
     def post_submit_tasks(self, submit_req):
-        kudos = self.job_kudos if SIMULATE_KUDOS_LOCALLY else submit_req.json()["reward"]
+        if SIMULATE_KUDOS_LOCALLY:
+            kudos = self.job_kudos
+        else:
+            try:
+                kudos = submit_req.json().get("reward", 0)
+            except Exception:
+                kudos = 0
         bridge_stats.update_inference_stats(self.current_model, kudos)
-
-
-def count_parentheses(s):
-    open_p = False
-    count = 0
-    for c in s:
-        if c == "(":
-            open_p = True
-        elif c == ")" and open_p:
-            open_p = False
-            count += 1
-    return count

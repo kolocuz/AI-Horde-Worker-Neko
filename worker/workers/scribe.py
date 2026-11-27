@@ -19,13 +19,6 @@ class ScribeWorker(WorkerFramework):
             self.last_config_reload = time.time() - 55
         return kai_avail
 
-    # We want this to be extendable as well
-    def add_job_to_queue(self):
-        super().add_job_to_queue()
-
-    def pop_job(self):
-        return super().pop_job()
-
     def get_running_models(self):
         running_job_models = [job.current_model for job_thread, start_time, job in self.running_jobs]
         queued_jobs_models = [job.current_model for job in self.waiting_jobs]

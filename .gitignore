@@ -195,3 +195,9 @@ src/taming-transformers
 /tmp
 /hordelib
 .vscode
+
+# Runtime / local data (do not commit)
+/models/
+/logs/
+*.lock
+*.lock.lock

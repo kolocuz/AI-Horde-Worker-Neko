@@ -1,4 +1,5 @@
 """The configuration of the bridge"""
+import copy
 import os
 import random
 import sys
@@ -9,18 +10,18 @@ import yaml
 
 from worker.consts import BRIDGE_CONFIG_FILE, BRIDGE_VERSION
 from worker.logger import logger
+from worker.utils.network import request_with_retry, response_json
 
 
 class BridgeDataTemplate:
     """Configuration object"""
-
-    mutex = threading.Lock()
 
     def __init__(self, args):
         random.seed()
         # I have to pass the args from the extended class, as the framework class doesn't
         # know what kind of polymorphism this worker is using
         self.args = args
+        self.mutex = threading.Lock()
 
         # If there is a YAML config file, load it
         self.load_config()
@@ -51,52 +52,101 @@ class BridgeDataTemplate:
         self.suppress_speed_warnings = False
         self.backend_engine = os.environ.get("HORDE_BACKEND_ENGINE", "unknown")
 
+    def __deepcopy__(self, memo):
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for key, value in self.__dict__.items():
+            if key == "mutex":
+                setattr(result, key, threading.Lock())
+            elif key == "args":
+                setattr(result, key, copy.copy(value))
+            else:
+                setattr(result, key, copy.deepcopy(value, memo))
+        return result
+
     def load_config(self):
         # YAML config
         if os.path.exists(BRIDGE_CONFIG_FILE):
-            with open(BRIDGE_CONFIG_FILE, "rt", encoding="utf-8", errors="ignore") as configfile:
-                config = yaml.safe_load(configfile)
-                # Map the config's values directly into this instance's properties
-                for key, value in config.items():
-                    setattr(self, key, value)
+            try:
+                with open(BRIDGE_CONFIG_FILE, "rt", encoding="utf-8", errors="ignore") as configfile:
+                    config = yaml.safe_load(configfile)
+            except (OSError, yaml.YAMLError) as err:
+                logger.warning("Failed to load config {}: {}. Keeping previous config.", BRIDGE_CONFIG_FILE, err)
+                return None
+            if not isinstance(config, dict):
+                logger.warning("Config file {} does not contain a mapping; ignoring it.", BRIDGE_CONFIG_FILE)
+                return None
+            # Map the config's values directly into this instance's properties
+            protected = {"mutex", "args", "model_database", "SENSITIVE_KEYS"}
+            for key, value in config.items():
+                if key.startswith("_") or key in protected:
+                    continue
+                setattr(self, key, value)
             return True  # loaded
         return None
 
     @logger.catch(reraise=True)
     def reload_data(self):
         """Reloads configuration data"""
-        previous_api_key = self.api_key
-        self.load_config()
-        if self.args.api_key:
-            self.api_key = self.args.api_key
-        if self.args.worker_name:
-            self.worker_name = self.args.worker_name
-        if self.args.horde_url:
-            self.horde_url = self.args.horde_url
-        if self.args.priority_usernames:
-            self.priority_usernames = self.args.priority_usernames
-        if self.args.max_threads:
-            self.max_threads = self.args.max_threads
-        if self.args.queue_size:
-            self.queue_size = self.args.queue_size
-        if self.args.allow_unsafe_ip:
-            self.allow_unsafe_ip = self.args.allow_unsafe_ip
-        if self.args.max_power:
-            self.max_power = self.args.max_power
-        self.max_power = max(self.max_power, 2)
-        if not self.initialized or previous_api_key != self.api_key:
+        with self.mutex:
+            previous_api_key = self.api_key
+            self.load_config()
+            if self.args.api_key:
+                self.api_key = self.args.api_key
+            if self.args.worker_name:
+                self.worker_name = self.args.worker_name
+            if self.args.horde_url:
+                self.horde_url = self.args.horde_url
+            if self.args.priority_usernames:
+                self.priority_usernames = self.args.priority_usernames
+            if self.args.max_threads is not None:
+                self.max_threads = self.args.max_threads
+            if self.args.queue_size is not None:
+                self.queue_size = self.args.queue_size
+            if self.args.allow_unsafe_ip:
+                self.allow_unsafe_ip = self.args.allow_unsafe_ip
+            if self.args.max_power is not None:
+                self.max_power = self.args.max_power
             try:
-                user_req = requests.get(
-                    f"{self.horde_url}/api/v2/find_user",
-                    headers={"apikey": self.api_key},
-                    timeout=10,
-                )
-                user_req = user_req.json()
-                self.username = user_req["username"]
+                self.max_power = max(int(self.max_power), 2)
+            except (TypeError, ValueError):
+                self.max_power = 8
+            for attr in ("max_threads", "queue_size", "stats_output_frequency", "max_models_to_download"):
+                try:
+                    setattr(self, attr, int(getattr(self, attr)))
+                except (TypeError, ValueError):
+                    continue
+            self.max_threads = max(1, self.max_threads)
+            self.queue_size = max(0, self.queue_size)
+            self.stats_output_frequency = max(0, self.stats_output_frequency)
+            self.max_models_to_download = max(0, self.max_models_to_download)
+            need_user_refresh = not self.initialized or previous_api_key != self.api_key
+            api_key = self.api_key
+            horde_url = self.horde_url
 
+        if need_user_refresh:
+            try:
+                with requests.Session() as session:
+                    user_req = request_with_retry(
+                        session,
+                        "GET",
+                        f"{horde_url}/api/v2/find_user",
+                        headers={"apikey": api_key},
+                        timeout=10,
+                        retries=1,
+                        backoff_seconds=2,
+                        log_prefix="find_user",
+                    )
+                user_data = response_json(user_req, default={})
+                username = user_data.get("username", "N/A") if user_req and user_req.ok else "N/A"
+                if username == "N/A":
+                    logger.warning(f"Server {horde_url} error during find_user. Setting username 'N/A'")
             except Exception:
-                logger.warning(f"Server {self.horde_url} error during find_user. Setting username 'N/A'")
-                self.username = "N/A"
+                logger.warning(f"Server {horde_url} error during find_user. Setting username 'N/A'")
+                username = "N/A"
+            with self.mutex:
+                self.username = username
 
     @logger.catch(reraise=True)
     def check_models(self, model_manager):
@@ -115,19 +165,25 @@ class BridgeDataTemplate:
                     f"Model name requested {model} in bridgeData is unknown to us. "
                     "Please check your configuration. Aborting!",
                 )
-                self.model_names.remove(model)
+                with self.mutex:
+                    if model in self.model_names:
+                        self.model_names.remove(model)
                 continue
             if int(model_info.get("min_bridge_version", 0)) > BRIDGE_VERSION:
                 logger.warning(
                     f"Model requested {model} in bridgeData is not supported in bridge version {BRIDGE_VERSION}. "
                     "Please upgrade your bridge. Skipping.",
                 )
-                self.model_names.remove(model)
+                with self.mutex:
+                    if model in self.model_names:
+                        self.model_names.remove(model)
                 continue
             if model in model_manager.get_loaded_models_names():
                 continue
             # TODO: Remove `self.args.skip_md5 or ` after fully deprecating arg.
-            if not model_manager.validate_model(model, skip_checksum=self.args.skip_md5 or self.args.skip_checksum):
+            skip_md5 = getattr(self.args, "skip_md5", False)
+            skip_checksum = getattr(self.args, "skip_checksum", False)
+            if not model_manager.validate_model(model, skip_checksum=skip_md5 or skip_checksum):
                 logger.debug(f"Model {model} not found or has wrong checksum")
                 if (
                     model not in model_manager.get_available_models_by_types()
@@ -138,10 +194,19 @@ class BridgeDataTemplate:
                     not_found_models.append(model)
                 else:
                     logger.debug(f"Downloading Model {model} would exceed max_models_to_download. Skipping")
-                    self.model_names.remove(model)
+                    with self.mutex:
+                        if model in self.model_names:
+                            self.model_names.remove(model)
         if not models_exist:
             if self.args.yes or self.check_extra_conditions_for_download_choice():
                 choice = "y"
+            elif not sys.stdin.isatty():
+                logger.error(
+                    "Missing models {} and no interactive terminal available. "
+                    "Run with --yes or download models manually.",
+                    not_found_models,
+                )
+                sys.exit(1)
             else:
                 choice = input(
                     "You do not appear to have downloaded the models needed yet.\n"
@@ -154,39 +219,45 @@ class BridgeDataTemplate:
                 )
             if choice not in ["y", "Y", "", "yes", "all", "a"]:
                 sys.exit(1)
-            for model in not_found_models:
-                # logger.init(f"Model: {model}", status="Downloading")
-                if not model_manager.download_model(model):
-                    logger.error(
-                        "Something went wrong when downloading the model! You may need to restart the bridge.",
-                    )
 
             if choice in ["all", "a"]:
-                model_manager.download_all()
-            elif choice in ["y", "Y", "", "yes"]:
+                if not model_manager.download_all():
+                    logger.error("Something went wrong when downloading all models.")
+            else:
                 for model in not_found_models:
-                    # logger.init(f"Model: {model}", status="Downloading")
                     if not model_manager.download_model(model):
-                        logger.message(
-                            "Something went wrong when downloading the model and it does not fit the expected "
-                            "checksum.",
+                        logger.error(
+                            "Something went wrong when downloading model {}. It may not fit the expected checksum.",
+                            model,
                         )
-                        self.model_names.remove(model)
+                        with self.mutex:
+                            if model in self.model_names:
+                                self.model_names.remove(model)
         if not self.initialized:
             logger.init_ok("Models", status="OK")
         if os.path.exists("bridgeData.py") or os.path.exists(BRIDGE_CONFIG_FILE):
             if not self.initialized:
                 logger.init_ok("Bridge Config", status="OK")
-        elif input(
+        elif sys.stdin.isatty() and input(
             "You do not appear to have a bridgeData configuration file. "
             "Would you like to create it from the template now? (y/n)",
         ) in ["y", "Y", "", "yes"]:
-            with open("bridgeData_template.yaml", "r") as firstfile, open("bridgeData.yaml", "a") as secondfile:
+            with open("bridgeData_template.yaml", "r", encoding="utf-8") as firstfile, open(
+                "bridgeData.yaml",
+                "a",
+                encoding="utf-8",
+            ) as secondfile:
                 for line in firstfile:
                     secondfile.write(line)
             logger.message(
                 "bridgeData.yaml created. Bridge will exit. "
                 "Please edit bridgeData.yaml with your setup and restart the worker",
+            )
+            sys.exit(2)
+        elif not os.path.exists("bridgeData.py") and not os.path.exists(BRIDGE_CONFIG_FILE):
+            logger.error(
+                "No bridgeData configuration file found and no interactive terminal available. "
+                "Create bridgeData.yaml from bridgeData_template.yaml.",
             )
             sys.exit(2)
 
@@ -196,28 +267,32 @@ class BridgeDataTemplate:
 
     def reload_models(self, model_manager):
         """Reloads models - Note this is IN A THREAD"""
-        if self.models_reloading:
-            return
-        self.models_reloading = True
+        with self.mutex:
+            if self.models_reloading:
+                return
+            self.models_reloading = True
         thread = threading.Thread(target=self._reload_models, args=(model_manager,), daemon=True)
         thread.start()
 
     @logger.catch(reraise=True)
     def _reload_models(self, model_manager):
-        with self.mutex:
-            model_names = self.model_names[:]
-        for model in model_manager.get_loaded_models_names():
-            if model not in model_names:
-                logger.init(f"{model}", status="Unloading")
-                model_manager.unload_model(model)
-        for model in model_names:
-            if model not in model_manager.get_loaded_models_names():
-                success = None
-                if model == "safety_checker":
-                    success = model_manager.load(model, cpu_only=True)
-                else:
-                    success = model_manager.load(model)
-                if not success:
-                    logger.init_err(f"{model}", status="Error")
-            self.initialized = True
-        self.models_reloading = False
+        try:
+            with self.mutex:
+                model_names = self.model_names[:]
+            for model in model_manager.get_loaded_models_names():
+                if model not in model_names:
+                    logger.init(f"{model}", status="Unloading")
+                    model_manager.unload_model(model)
+            for model in model_names:
+                if model not in model_manager.get_loaded_models_names():
+                    if model == "safety_checker":
+                        success = model_manager.load(model, cpu_only=True)
+                    else:
+                        success = model_manager.load(model)
+                    if not success:
+                        logger.init_err(f"{model}", status="Error")
+            with self.mutex:
+                self.initialized = True
+        finally:
+            with self.mutex:
+                self.models_reloading = False

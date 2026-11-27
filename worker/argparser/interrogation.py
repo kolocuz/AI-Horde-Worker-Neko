@@ -1,17 +1,19 @@
 """Arg parsing for the main script."""
 from worker import disable_xformers
-from worker.argparser.framework import arg_parser
+from worker.argparser.framework import LazyArgs, arg_parser
 
 arg_parser.add_argument(
     "-f",
     "--forms",
-    action="append",
-    type=list,
+    nargs="+",
+    type=str,
     required=False,
     default=None,
     help="Which forms to run on this horde.",
 )
 
-args = arg_parser.parse_args()
+def _post_parse(_parsed):
+    disable_xformers.activate()
 
-disable_xformers.activate()
+
+args = LazyArgs(arg_parser, post_parse=_post_parse)

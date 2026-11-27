@@ -270,7 +270,12 @@ def check_for_csam(clip_model, image, prompt, model_info=None):
     interrogator = Interrogator(clip_model)
 
     word_list = list(UNDERAGE_CONTEXT.keys()) + list(LEWD_CONTEXT.keys()) + CONTROL_WORDS + TEST_WORDS
-    similarity_result = interrogator(image=image, text_array=word_list, similarity=True)["default"]
+    raw_similarity = interrogator(image=image, text_array=word_list, similarity=True)
+    similarity_result = raw_similarity.get("default", {}) if isinstance(raw_similarity, dict) else {}
+    if not isinstance(similarity_result, dict):
+        similarity_result = {}
+    for word in word_list:
+        similarity_result.setdefault(word, 0.0)
     poc_elapsed_time = time.time() - poc_start
     prompt, negprompt = normalize_prompt(prompt)
     prompt_tweaks = {}

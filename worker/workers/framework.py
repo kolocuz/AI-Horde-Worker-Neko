@@ -1,8 +1,9 @@
 """This is the worker, it's the main workhorse that deals with getting requests, and spawning data processing"""
+import contextlib
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
 
 from worker.logger import logger
 from worker.stats import bridge_stats
@@ -56,11 +57,14 @@ class WorkerFramework:
     def on_restart(self):
         """Called when the worker loop is restarted. Make sure to invoke super().on_restart() when overriding."""
         self.soft_restarts += 1
+        self.consecutive_failed_jobs = 0
+        self.consecutive_executor_restarts = 0
 
     @logger.catch(reraise=True)
     def stop(self):
         self.should_stop = True
-        self.ui_class.stop()
+        if self.ui_class is not None:
+            self.ui_class.stop()
         logger.info("Stop methods called")
 
     @logger.catch(reraise=True)
@@ -76,11 +80,11 @@ class WorkerFramework:
                 self.on_restart()
                 self.run_count = 0
 
-            with ThreadPoolExecutor(max_workers=self.bridge_data.max_threads) as self.executor:
+            self.executor = ThreadPoolExecutor(max_workers=self.bridge_data.max_threads)
+            try:
                 while not self.should_stop:
                     if self.should_restart:
-                        self.executor.shutdown(wait=False)
-                        self.should_restart = True
+                        self.executor.shutdown(wait=False, cancel_futures=True)
                         break
                     try:
                         if self.ui and not self.ui.is_alive():
@@ -91,7 +95,48 @@ class WorkerFramework:
                         self.should_stop = True
                         self.exit_rc = 0
                         break
-                if self.should_stop or self.soft_restarts > 15:
+            finally:
+                with contextlib.suppress(Exception):
+                    self.executor.shutdown(wait=False, cancel_futures=True)
+            # On restart, drain old jobs before on_restart/model unload.
+            if self.should_restart and not self.should_stop:
+                running_futures = [job_thread for job_thread, _start_time, _job in list(self.running_jobs)]
+                not_done = set()
+                if running_futures:
+                    _done, not_done = futures_wait(running_futures, timeout=30)
+                if not_done:
+                    logger.critical(
+                        "Restart drain timed out; {} job thread(s) still running. "
+                        "Refusing to restart to avoid unloading models under active jobs. Stopping worker.",
+                        len(not_done),
+                    )
+                    self.should_restart = False
+                    self.should_stop = True
+                    self.exit_rc = 1
+                else:
+                    for _job_thread, _start_time, job in list(self.running_jobs):
+                        with contextlib.suppress(Exception):
+                            job.close()
+                    for job in list(self.waiting_jobs):
+                        with contextlib.suppress(Exception):
+                            job.close()
+                    self.running_jobs.clear()
+                    self.waiting_jobs.clear()
+                    bridge_stats.set_worker_state("idle", "Restarting worker...", progress=None)
+            # Normal stop path: best-effort drain/close.
+            if self.should_stop and (self.running_jobs or self.waiting_jobs):
+                running_futures = [job_thread for job_thread, _start_time, _job in list(self.running_jobs)]
+                if running_futures:
+                    futures_wait(running_futures, timeout=15)
+                for _job_thread, _start_time, job in list(self.running_jobs):
+                    with contextlib.suppress(Exception):
+                        job.close()
+                for job in list(self.waiting_jobs):
+                    with contextlib.suppress(Exception):
+                        job.close()
+                self.running_jobs.clear()
+                self.waiting_jobs.clear()
+            if self.should_stop or self.soft_restarts > 15:
                     if self.soft_restarts > 15:
                         logger.error("Too many soft restarts, exiting the worker. Please review your config.")
                         logger.error("You can try asking for help in the official discord if this persists.")
@@ -106,6 +151,7 @@ class WorkerFramework:
         if time.time() - self.last_config_reload > 60:
             self.reload_bridge_data()
         if not self.can_process_jobs():
+            bridge_stats.set_worker_state("idle", "Waiting for worker prerequisites...", progress=None)
             # logger.debug("Cron: SLEEPING FOR 5 SECONDS")
             time.sleep(5)
             return
@@ -121,11 +167,13 @@ class WorkerFramework:
         # logger.debug("Cron: End of start new jobs")
         # Check if any jobs are done
         # logger.debug("Cron: Starting to check if jobs are done")
-        for job_thread, start_time, job in self.running_jobs:
+        for job_thread, start_time, job in self.running_jobs[:]:
             self.check_running_job_status(job_thread, start_time, job)
             if self.should_restart or self.should_stop:
                 break
         # logger.debug("Cron: End of check if jobs are done")
+        if not self.running_jobs and not self.waiting_jobs:
+            bridge_stats.set_worker_state("idle", "Waiting for work...", progress=None)
         # Give the CPU a break
         time.sleep(0.02)
         # logger.debug("Cron: End process_jobs()")
@@ -145,7 +193,11 @@ class WorkerFramework:
         """Polls the AI Horde for new jobs and creates as many Job classes needed
         As the amount of jobs returned"""
         job_popper = self.PopperClass(self.model_manager, self.bridge_data)
-        pops = job_popper.horde_pop()
+        try:
+            pops = job_popper.horde_pop()
+        finally:
+            with contextlib.suppress(Exception):
+                job_popper.close()
         if not pops:
             return None
         new_jobs = []
@@ -173,22 +225,32 @@ class WorkerFramework:
         # Run the job
         if job:
             self.running_jobs.append((self.executor.submit(job.start_job), time.monotonic(), job))
+            job_id = getattr(job, "current_id", None) or (job.pop.get("id") if isinstance(getattr(job, "pop", None), dict) else None)
+            model = getattr(job, "current_model", None) or (job.pop.get("model") if isinstance(getattr(job, "pop", None), dict) else None)
+            label = f"Working on job {job_id}" if job_id else "Working on job"
+            if model:
+                label += f" ({model})"
+            bridge_stats.set_worker_state("working", label, progress=None)
             logger.debug("New job processing")
         else:
             logger.debug("No new job to start")
+            return False
         return True
 
     def check_running_job_status(self, job_thread, start_time, job):
         """Polls the AI Horde for new jobs and creates a Job class"""
         runtime = time.monotonic() - start_time
         if job_thread.done():
-            if job_thread.exception(timeout=1) or job.is_faulted():
-                if job_thread.exception(timeout=1):
-                    logger.error("Job failed with exception, {}", job_thread.exception())
-                    logger.exception(job_thread.exception())
+            thread_exc = job_thread.exception(timeout=1)
+            failed = bool(thread_exc or job.is_faulted())
+            if failed:
+                if thread_exc:
+                    logger.error("Job failed with exception, {}", thread_exc)
+                    logger.exception(thread_exc)
                 if job.is_out_of_memory():
                     logger.error("Job failed with out of memory error")
                     self.out_of_memory_jobs += 1
+                bridge_stats.set_worker_state("fault", "Job failed, waiting for recovery...", progress=None, transient_ttl=5)
                 if self.out_of_memory_jobs >= 10:
                     logger.critical("Too many jobs have failed with out of memory error. Aborting!")
                     self.should_stop = True
@@ -213,18 +275,32 @@ class WorkerFramework:
             self.run_count += 1
             logger.debug(f"Job finished successfully in {runtime:.3f}s (Total Completed: {self.run_count})")
             self.running_jobs.remove((job_thread, start_time, job))
+            if not failed:
+                if self.running_jobs:
+                    _, _, next_job = self.running_jobs[0]
+                    job_id = getattr(next_job, "current_id", None) or (
+                        next_job.pop.get("id") if isinstance(getattr(next_job, "pop", None), dict) else None
+                    )
+                    label = f"Working on job {job_id}" if job_id else "Working on job"
+                    bridge_stats.set_worker_state("working", label, progress=None)
+                else:
+                    bridge_stats.set_worker_state("done", "Job completed", progress=100, transient_ttl=4)
+            elif self.running_jobs:
+                _, _, next_job = self.running_jobs[0]
+                job_id = getattr(next_job, "current_id", None) or (
+                    next_job.pop.get("id") if isinstance(getattr(next_job, "pop", None), dict) else None
+                )
+                label = f"Working on job {job_id}" if job_id else "Working on job"
+                bridge_stats.set_worker_state("working", label, progress=None)
             return
 
         # check if any job has run for more than 180 seconds
         if job_thread.running() and job.is_stale():
             logger.warning("Restarting all jobs, as a job is stale " f": {runtime:.3f}s")
-            for (
-                inner_job_thread,
-                inner_start_time,
-                inner_job,
-            ) in self.running_jobs:  # Sometimes it's already removed
-                self.running_jobs.remove((inner_job_thread, inner_start_time, inner_job))
-                job_thread.cancel()
+            for inner_job_thread, _inner_start_time, _inner_job in list(self.running_jobs):
+                inner_job_thread.cancel()
+            # Do not clear running/waiting jobs here; centralized restart drain in start()
+            # must wait/quiesce before on_restart/model unload.
             self.should_restart = True
             return
 
@@ -235,7 +311,7 @@ class WorkerFramework:
         ):
             bonus_per_hour = self.get_uptime_kudos()
             self.last_stats_time = time.time()
-            kph = bridge_stats.stats.get("kudos_per_hour", 0) + bonus_per_hour
+            kph = bridge_stats.get_stats_snapshot().get("kudos_per_hour", 0) + bonus_per_hour
             logger.info(f"Estimated average kudos per hour: {kph}")
 
     def get_uptime_kudos(self):
@@ -253,5 +329,10 @@ class WorkerFramework:
 
     def reload_bridge_data(self):
         self.reload_data()
-        self.executor._max_workers = self.bridge_data.max_threads
+        executor = getattr(self, "executor", None)
+        if executor is not None:
+            try:
+                executor._max_workers = self.bridge_data.max_threads
+            except (AttributeError, TypeError, ValueError) as err:
+                logger.debug("Could not resize thread executor: {}", err)
         self.last_config_reload = time.time()

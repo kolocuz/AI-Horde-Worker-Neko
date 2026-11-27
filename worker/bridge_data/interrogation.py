@@ -12,7 +12,7 @@ class InterrogationBridgeData(BridgeDataTemplate):
 
     def __init__(self):
         super().__init__(args)
-        self.forms = os.environ.get("HORDE_INTERROGATION_FORMS", "caption").split(",")
+        self.forms = [f.strip() for f in os.environ.get("HORDE_INTERROGATION_FORMS", "caption").split(",") if f.strip()]
         self.model_names = []
         # Where we load models from
         if not hasattr(self, "cache_home"):
@@ -26,20 +26,36 @@ class InterrogationBridgeData(BridgeDataTemplate):
         """Reloads configuration data"""
         previous_url = self.horde_url
         super().reload_data()
-        if hasattr(self, "alchemist_name") and not self.args.worker_name:
-            self.worker_name = self.alchemist_name
-        if args.forms:
-            self.forms = args.forms
-        # Ensure no duplicates
-        self.forms = list(set(self.forms))
-        if "nsfw" in self.forms and "safety_checker" not in self.model_names:
-            self.model_names.append("safety_checker")
-        if "caption" in self.forms and "BLIP_Large" not in self.model_names:
-            self.model_names.append("BLIP_Large")
-        if "interrogation" in self.forms and "ViT-L/14" not in self.model_names:
-            self.model_names.append("ViT-L/14")
-        if "post-process" in self.forms:
-            self.model_names += list(POST_PROCESSORS_HORDELIB_MODELS)
+        with self.mutex:
+            if hasattr(self, "alchemist_name") and not self.args.worker_name:
+                self.worker_name = self.alchemist_name
+            if args.forms:
+                self.forms = args.forms
+            # Ensure no duplicates or empty forms
+            self.forms = [f for f in list(dict.fromkeys(self.forms)) if f and f.strip()]
+        with self.mutex:
+            required_models = set()
+            if "nsfw" in self.forms:
+                required_models.add("safety_checker")
+            if "caption" in self.forms:
+                required_models.add("BLIP_Large")
+            if "interrogation" in self.forms:
+                required_models.add("ViT-L/14")
+            if "post-process" in self.forms:
+                required_models.update(POST_PROCESSORS_HORDELIB_MODELS)
+
+            managed_models = {"safety_checker", "BLIP_Large", "ViT-L/14", *POST_PROCESSORS_HORDELIB_MODELS}
+            self.model_names = [model for model in self.model_names if model not in managed_models or model in required_models]
+
+            for required in ("safety_checker", "BLIP_Large", "ViT-L/14"):
+                if required in required_models and required not in self.model_names:
+                    self.model_names.append(required)
+            if "post-process" in self.forms:
+                for model in POST_PROCESSORS_HORDELIB_MODELS:
+                    if model not in self.model_names:
+                        self.model_names.append(model)
+            # Deduplicate while preserving order
+            self.model_names = list(dict.fromkeys(self.model_names))
         if (not self.initialized and not self.models_reloading) or previous_url != self.horde_url:
             logger.init(
                 (

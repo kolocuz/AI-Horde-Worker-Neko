@@ -13,6 +13,7 @@ from worker.consts import KNOWN_INTERROGATORS, POST_PROCESSORS_HORDELIB_MODELS
 from worker.jobs.poppers import StableDiffusionPopper
 from worker.jobs.stable_diffusion import StableDiffusionHordeJob
 from worker.logger import logger
+from worker.utils.network import request_with_retry, response_json
 from worker.workers.framework import WorkerFramework
 
 
@@ -37,18 +38,25 @@ class StableDiffusionWorker(WorkerFramework):
             ):
                 return False
 
-            self.pilot_job_was_run = True
-            self.run_pilot_job()
+            pilot_ok = self.run_pilot_job()
+            self.pilot_job_was_run = pilot_ok
+            if not pilot_ok:
+                return False
         return can_do and self.pilot_job_was_run
 
     # We want this to be extendable as well
     def add_job_to_queue(self):
-        job = super().add_job_to_queue()
-        if job and job.current_model not in self.bridge_data.model_names:
-            # The job sends the current models loaded in the MM to
-            # the horde. That model might end up unloaded if it's dynamic
-            # so we need to ensure it will be there next iteration.
-            self.bridge_data.model_names.append(job.current_model)
+        jobs = self.pop_job()
+        if not jobs:
+            return
+        self.waiting_jobs.extend(jobs)
+        for job in jobs:
+            with self.bridge_data.mutex:
+                if job.current_model not in self.bridge_data.model_names:
+                    # The job sends the current models loaded in the MM to
+                    # the horde. That model might end up unloaded if it's dynamic
+                    # so we need to ensure it will be there next iteration.
+                    self.bridge_data.model_names.append(job.current_model)
 
     def pop_job(self):
         return super().pop_job()
@@ -61,7 +69,19 @@ class StableDiffusionWorker(WorkerFramework):
     def calculate_dynamic_models(self):
         if self.bridge_data.models_reloading:
             return
-        all_models_data = requests.get(f"{self.bridge_data.horde_url}/api/v2/status/models", timeout=10).json()
+        with requests.Session() as session:
+            response = request_with_retry(
+                session,
+                "GET",
+                f"{self.bridge_data.horde_url}/api/v2/status/models",
+                timeout=10,
+                retries=1,
+                log_prefix="Dynamic models",
+            )
+        all_models_data = response_json(response, default=None)
+        if not isinstance(all_models_data, list):
+            logger.debug("Failed to retrieve dynamic model status: invalid or missing response")
+            return
         # We remove models with no queue from our list of models to load dynamically
         models_data = [md for md in all_models_data if md["queued"] > 0]
         models_data.sort(key=lambda x: (x["eta"], x["queued"]), reverse=True)
@@ -101,8 +121,11 @@ class StableDiffusionWorker(WorkerFramework):
             new_dynamic_models,
         )
         # Ensure we don't unload currently queued models
+        required_models = ["safety_checker", "ViT-L/14"]
+        if self.bridge_data.allow_post_processing:
+            required_models.extend(POST_PROCESSORS_HORDELIB_MODELS)
         with self.bridge_data.mutex:
-            self.bridge_data.model_names = list(set(total_models + running_models))
+            self.bridge_data.model_names = list(set(total_models + running_models + required_models))
 
     def reload_data(self):
         models_on_gpu = len(get_models_on_gpu())
@@ -153,7 +176,7 @@ class StableDiffusionWorker(WorkerFramework):
             if util_model in available_models:
                 available_models.remove(util_model)
 
-        return (50 + (len(self.model_manager.get_loaded_models_names()) * 2)) * 6
+        return (50 + (len(available_models) * 2)) * 6
 
     @override
     @logger.catch(reraise=True)
@@ -243,7 +266,8 @@ class StableDiffusionWorker(WorkerFramework):
                 )
             for error_message in shared_error_messages:
                 logger.error(error_message)
-            exit(1)
+            self.should_stop = True
+            return False
 
         logger.info("Basic inference job completed successfully.")
 
@@ -257,5 +281,7 @@ class StableDiffusionWorker(WorkerFramework):
                 logger.error("Failed to run a basic upscale job. This is a critical error.")
                 for error_message in shared_error_messages:
                     logger.error(error_message)
-                exit(1)
+                self.should_stop = True
+                return False
             logger.info("Basic upscale job completed successfully.")
+        return True

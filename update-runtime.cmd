@@ -9,20 +9,12 @@ SET MAMBA_ROOT_PREFIX=%~dp0conda
 echo %MAMBA_ROOT_PREFIX%
 
 
-setlocal EnableDelayedExpansion
+set "hordelib="
+set "scribe="
 for %%a in (%*) do (
-    if /I "%%a"=="--hordelib" (
-        set hordelib=true
-    ) else (
-        set hordelib=
-    )
-    if /I "%%a"=="--scribe" (
-        set scribe=true
-    ) else (
-        set scribe=
-    )
+    if /I "%%a"=="--hordelib" set "hordelib=true"
+    if /I "%%a"=="--scribe" set "scribe=true"
 )
-endlocal
 
 if defined scribe (
   SET CONDA_ENVIRONMENT_FILE=environment_scribe.yaml

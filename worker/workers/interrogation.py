@@ -18,9 +18,6 @@ class InterrogationWorker(WorkerFramework):
             logger.info("No models loaded. Waiting for the first model to be up before polling the horde")
         return can_do
 
-    def pop_job(self):
-        return super().pop_job()
-
     def reload_data(self):
         """This is just a utility function to reload the configuration"""
         super().reload_data()

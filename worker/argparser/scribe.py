@@ -1,5 +1,5 @@
 """Arg parsing for the main script."""
-from worker.argparser.framework import arg_parser
+from worker.argparser.framework import LazyArgs, arg_parser
 
 arg_parser.add_argument(
     "--sfw",
@@ -19,13 +19,6 @@ arg_parser.add_argument(
     required=False,
     help="List the words that you want to blacklist.",
 )
-# arg_parser.add_argument(
-#     "-m",
-#     "--model",
-#     action="store",
-#     required=False,
-#     help="Which model to run on this horde.",
-# )
 arg_parser.add_argument(
     "--kai_url",
     action="store",
@@ -33,4 +26,4 @@ arg_parser.add_argument(
     help="The URL in which the KoboldAI Client API can be found.",
 )
 
-args = arg_parser.parse_args()
+args = LazyArgs(arg_parser)

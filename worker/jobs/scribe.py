@@ -9,9 +9,11 @@ from worker.enums import JobStatus
 from worker.jobs.framework import HordeJobFramework
 from worker.logger import logger
 from worker.stats import bridge_stats
+from worker.utils.network import request_with_retry, response_json
 
 
 class ScribeHordeJob(HordeJobFramework):
+    submit_endpoint = "/api/v2/generate/text/submit"
     """Process a scribe job from the horde"""
 
     def __init__(self, mm, bd, pop):
@@ -21,6 +23,10 @@ class ScribeHordeJob(HordeJobFramework):
         self.seed = None
         self.text = None
         self.current_model = self.bridge_data.model
+        # Defensive read of pop fields; if missing/malformed, fault and submit
+        if not isinstance(self.pop, dict) or "id" not in self.pop or "payload" not in self.pop:
+            self.fault("ScribeHordeJob: invalid or missing pop payload", submit=True)
+            return
         self.current_id = self.pop["id"]
         self.current_payload = self.pop["payload"]
         self.current_payload["quiet"] = True
@@ -43,9 +49,7 @@ class ScribeHordeJob(HordeJobFramework):
         # These params will always exist in the payload from the horde
         gen_payload = self.current_payload
         if "width" in gen_payload or "length" in gen_payload or "steps" in gen_payload:
-            logger.error(f"Stable Diffusion payload detected. Aborting. ({gen_payload})")
-            self.status = JobStatus.FAULTED
-            self.start_submit_thread()
+            self.fault(f"Stable Diffusion payload detected. Aborting. ({gen_payload})", submit=True)
             return
         try:
             logger.info(
@@ -55,10 +59,17 @@ class ScribeHordeJob(HordeJobFramework):
             )
             time_state = time.time()
             if self.requested_softprompt != self.bridge_data.current_softprompt:
-                requests.put(
+                put_req = request_with_retry(
+                    self.session,
+                    "PUT",
                     self.bridge_data.kai_url + "/api/latest/config/soft_prompt",
                     json={"value": self.requested_softprompt},
+                    timeout=10,
+                    retries=0,
+                    log_prefix="Scribe softprompt",
                 )
+                if put_req is None or not put_req.ok:
+                    logger.warning("Failed to set softprompt on {}", self.bridge_data.kai_url)
                 time.sleep(1)  # Wait a second to unload the softprompt
             loop_retry = 0
             gen_success = False
@@ -90,7 +101,6 @@ class ScribeHordeJob(HordeJobFramework):
                             "eta_cutoff": "eta_cutoff",
                             "eps_cutoff": "epsilon_cutoff",
                             "mirostat": "mirostat_mode",
-                            "mirostat": "mirostat_mode",
                             "mirostat_tau": "mirostat_tau",
                             "mirostat_eta": "mirostat_eta",
                             "stop_sequence": "stop",
@@ -116,7 +126,7 @@ class ScribeHordeJob(HordeJobFramework):
                         )
 
                 except requests.exceptions.ConnectionError:
-                    logger.error(f"Worker {self.bridge_data.kai_url} unavailable. Retrying in 3 seconds...")
+                    logger.warning(f"Worker {self.bridge_data.kai_url} unavailable. Retrying in 3 seconds...")
                     loop_retry += 1
                     time.sleep(3)
                     continue
@@ -125,7 +135,8 @@ class ScribeHordeJob(HordeJobFramework):
                     self.status = JobStatus.FAULTED
                     self.start_submit_thread()
                     return
-                if not isinstance(gen_req.json(), dict):
+                req_json = response_json(gen_req, default=None)
+                if not isinstance(req_json, dict):
                     logger.error(
                         (
                             f"KAI instance {self.bridge_data.kai_url} API unexpected response on generate: {gen_req}. "
@@ -149,24 +160,13 @@ class ScribeHordeJob(HordeJobFramework):
                     self.status = JobStatus.FAULTED
                     self.start_submit_thread()
                     return
-                try:
-                    req_json = gen_req.json()
-                except json.decoder.JSONDecodeError:
-                    logger.error(
-                        (
-                            f"Something went wrong when trying to generate on {self.bridge_data.kai_url}. "
-                            "Please check the health of the KAI worker. Retrying 3 seconds...",
-                        ),
-                    )
-                    loop_retry += 1
-                    time.sleep(3)
-                    continue
+                # req_json already parsed and validated above
                 try:
                     if self.bridge_data.openai_api:
                         self.text = req_json["choices"][0]["text"]
                     else:
                         self.text = req_json["results"][0]["text"]
-                except KeyError:
+                except (KeyError, IndexError, TypeError):
                     logger.error(
                         (
                             f"Unexpected response received from {self.bridge_data.kai_url}: {req_json}. "
@@ -178,6 +178,9 @@ class ScribeHordeJob(HordeJobFramework):
                     time.sleep(3)
                     continue
                 gen_success = True
+            if not gen_success:
+                self.fault(f"Generation failed after {loop_retry} retries for job {self.current_id}.", submit=True)
+                return
             self.seed = 0
             logger.info(
                 f"Generation for id {self.current_id} finished successfully"
@@ -214,4 +217,8 @@ class ScribeHordeJob(HordeJobFramework):
             self.submit_dict["state"] = self.censored
 
     def post_submit_tasks(self, submit_req):
-        bridge_stats.update_inference_stats(self.current_model, submit_req.json()["reward"])
+        try:
+            reward = submit_req.json().get("reward", 0)
+        except Exception:
+            reward = 0
+        bridge_stats.update_inference_stats(self.current_model, reward)

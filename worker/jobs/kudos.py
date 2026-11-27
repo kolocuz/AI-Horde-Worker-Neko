@@ -1,7 +1,10 @@
+import os
 import pickle
 import sys
 
 import torch
+
+from worker.logger import logger
 
 
 class KudosModel:
@@ -137,14 +140,22 @@ class KudosModel:
     def one_hot_encode(cls, strings, unique_strings):
         one_hot = torch.zeros(len(strings), len(unique_strings))
         for i, string in enumerate(strings):
-            one_hot[i, unique_strings.index(string)] = 1
+            try:
+                index = unique_strings.index(string)
+            except ValueError:
+                continue
+            one_hot[i, index] = 1
         return one_hot
 
     @classmethod
     def one_hot_encode_combined(cls, strings, unique_strings):
         one_hot = torch.zeros(len(strings), len(unique_strings))
         for i, string in enumerate(strings):
-            one_hot[i, unique_strings.index(string)] = 1
+            try:
+                index = unique_strings.index(string)
+            except ValueError:
+                continue
+            one_hot[i, index] = 1
 
         return torch.sum(one_hot, dim=0, keepdim=True)
 
@@ -157,24 +168,32 @@ class KudosModel:
         data_post_processors = []
         data.append(
             [
-                payload["height"] / 1024,
-                payload["width"] / 1024,
-                payload["ddim_steps"] / 100,
-                payload["cfg_scale"] / 30,
-                payload.get("denoising_strength", 1.0),
-                payload.get("control_strength", payload.get("denoising_strength", 1.0)),
-                1.0 if payload["karras"] else 0.0,
+                float(payload.get("height", 512)) / 1024,
+                float(payload.get("width", 512)) / 1024,
+                float(payload.get("ddim_steps", 30)) / 100,
+                float(payload.get("cfg_scale", 7.5)) / 30,
+                float(payload.get("denoising_strength", 1.0)),
+                float(payload.get("control_strength", payload.get("denoising_strength", 1.0))),
+                1.0 if payload.get("karras", False) else 0.0,
                 1.0 if payload.get("hires_fix", False) else 0.0,
                 1.0 if payload.get("source_image", False) else 0.0,
                 1.0 if payload.get("source_mask", False) else 0.0,
             ],
         )
-        data_samplers.append(
-            payload["sampler_name"] if payload["sampler_name"] in KudosModel.KNOWN_SAMPLERS else "k_euler",
-        )
-        data_control_types.append(payload.get("control_type", "None"))
-        data_source_processing_types.append(payload.get("source_processing", "txt2img"))
-        data_post_processors = payload.get("post_processing", [])[:]
+        sampler_name = payload.get("sampler_name", "k_euler")
+        data_samplers.append(sampler_name if sampler_name in KudosModel.KNOWN_SAMPLERS else "k_euler")
+        control_type = payload.get("control_type") or "None"
+        if control_type not in cls.KNOWN_CONTROL_TYPES:
+            control_type = "None"
+        data_control_types.append(control_type)
+
+        source_processing = payload.get("source_processing") or "txt2img"
+        if source_processing not in cls.KNOWN_SOURCE_PROCESSING:
+            source_processing = "txt2img"
+        data_source_processing_types.append(source_processing)
+
+        raw_post_processors = payload.get("post_processing") or []
+        data_post_processors = [pp for pp in raw_post_processors if pp in cls.KNOWN_POST_PROCESSORS]
 
         _data_floats = torch.tensor(data).float()
         _data_samplers = cls.one_hot_encode(data_samplers, KudosModel.KNOWN_SAMPLERS)
@@ -190,6 +209,14 @@ class KudosModel:
         )
 
     def load_model(self, model_filename):
+        model_filename = os.path.abspath(model_filename)
+        if not os.path.isfile(model_filename):
+            raise FileNotFoundError(f"Kudos model file not found: {model_filename}")
+        logger.warning(
+            "Loading kudos model from local file via pickle. "
+            "Only use trusted model files: {}",
+            model_filename,
+        )
         with open(model_filename, "rb") as infile:
             self.model = pickle.load(infile)
         self.calculate_basis_time()

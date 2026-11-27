@@ -37,39 +37,54 @@ class LogStats:
             adate = datetime.datetime.now() - datetime.timedelta(1)
             adate = adate.strftime("%Y-%m-%d")
         elif self.period == PERIOD_HOUR:
-            adate = datetime.datetime.now()  # - datetime.timedelta(hours=1)
-            adate = adate.strftime("%Y-%m-%d %H:")
+            # Use rolling 1-hour cutoff; matching handled in parse_log.
+            adate = datetime.datetime.now() - datetime.timedelta(hours=1)
         else:
             adate = None
         return adate
 
     def get_num_lines(self, file_path):
-        with open(file_path, "r+") as fp:
-            buf = mmap.mmap(fp.fileno(), 0)
-            lines = 0
-            while buf.readline():
-                lines += 1
-            return lines
+        with open(file_path, "rb") as fp:
+            size = fp.seek(0, 2)
+            if size == 0:
+                return 0
+            fp.seek(0)
+            with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as buf:
+                lines = 0
+                while buf.readline():
+                    lines += 1
+                return lines
 
     def parse_log(self):
         # Identify all log files and total number of log lines
         total_log_lines = sum(self.get_num_lines(logfile) for logfile in glob.glob(self.logfile))
         progress = tqdm(total=total_log_lines, leave=True, unit=" lines", unit_scale=True)
+        hour_cutoff = datetime.datetime.now() - datetime.timedelta(hours=1) if self.period == PERIOD_HOUR else None
+        period_date = self.get_date() if self.period in {PERIOD_TODAY, PERIOD_YESTERDAY} else None
         for logfile in glob.glob(self.logfile):
-            with open(logfile, "rt") as infile:
+            with open(logfile, "rt", encoding="utf-8", errors="ignore") as infile:
                 for line in infile:
                     # Grab the lines we're interested in
                     if regex := REGEX.match(line):
-                        if self.period and self.get_date() not in regex.group(1):
-                            continue
+                        if self.period == PERIOD_HOUR:
+                            try:
+                                line_time = datetime.datetime.strptime(regex.group(1), "%Y-%m-%d %H:%M")
+                            except ValueError:
+                                continue
+                            if hour_cutoff and line_time < hour_cutoff:
+                                continue
+                        elif self.period and period_date:
+                            line_date = regex.group(1).split()[0]
+                            if period_date != line_date:
+                                continue
 
-                        # Extract kudis and time
-                        kudos = regex.group(2)
+                        # Extract pop time and node
+                        pop_time = regex.group(2)
                         node = regex.group(3).split(":")[0]
                         if node in self.data:
-                            self.data[node] = [self.data[node][0] + float(kudos), self.data[node][1] + 1]
+                            self.data[node] = [self.data[node][0] + float(pop_time), self.data[node][1] + 1]
                         else:
-                            self.data[node] = [float(kudos), 1]
+                            self.data[node] = [float(pop_time), 1]
 
                     progress.update()
 
@@ -81,7 +96,6 @@ class LogStats:
         print(f"Average node pop times (out of {total} pops in total)")
         for k, v in self.data.items():
             print(f"{k.split(':')[0]:15} {round(v[0]/v[1], 2)} secs {v[1]:-8} jobs from this node")
-            total += v[1]
 
 
 if __name__ == "__main__":

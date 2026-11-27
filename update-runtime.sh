@@ -1,7 +1,5 @@
 #!/bin/bash
 
-ignore_hordelib=false
-
 # Parse command line arguments
 while [[ $# -gt 0 ]]
 do
@@ -30,9 +28,6 @@ if [ "$scribe" = true ]; then
 fi
 
 wget -qO- https://micromamba.snakepit.net/api/micromamba/linux-64/latest | tar -xvj bin/micromamba
-if [ ! -f "conda/envs/linux/bin/python" ]; then
-    bin/micromamba create --no-shortcuts -r conda -n linux -f ${CONDA_ENVIRONMENT_FILE} -y
-fi
 bin/micromamba create --no-shortcuts -r conda -n linux -f ${CONDA_ENVIRONMENT_FILE} -y
 
 if [ "$hordelib" = true ]; then

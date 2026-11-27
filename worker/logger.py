@@ -15,15 +15,16 @@ quiet = 0
 def set_logger_verbosity(count):
     global verbosity
     # The count comes reversed. So count = 0 means minimum verbosity
-    # While count 5 means maximum verbosity
-    # So the more count we have, the lowe we drop the versbosity maximum
+    # (most output), While count 5 means maximum verbosity
+    # (least output). The effective threshold is `verbosity` alone.
     verbosity = 20 - (count * 10)
 
 
 def quiesce_logger(count):
-    global quiet
-    # The bigger the count, the more silent we want our logger
-    quiet = count * 10
+    global verbosity
+    # The bigger the count, the more silent we want our logger.
+    # Increase the shared verbosity threshold so fewer records pass.
+    verbosity = verbosity + (count * 10)
 
 
 def is_stdout_log(record):
@@ -91,7 +92,6 @@ def test_logger():
     logger.init_warn("This is an init message", status="Warning")
     logger.init_err("This is an init message", status="Error")
     logger.message("This is user message")
-    sys.exit()
 
 
 logfmt = (
@@ -102,20 +102,29 @@ genfmt = "<level>{level: <10}</level> @ <green>{time:YYYY-MM-DD HH:mm:ss.SSSSSS}
 initfmt = "<magenta>INIT      </magenta> | <level>{extra[status]: <11}</level> | <magenta>{message}</magenta>"
 msgfmt = "<level>{level: <10}</level> | <level>{message}</level>"
 
-try:
-    logger.level("GENERATION", no=24, color="<cyan>")
-    logger.level("PROMPT", no=23, color="<yellow>")
-    logger.level("INIT", no=31, color="<white>")
-    logger.level("INIT_OK", no=31, color="<green>")
-    logger.level("INIT_WARN", no=31, color="<yellow>")
-    logger.level("INIT_ERR", no=31, color="<red>")
+# Register custom levels idempotently (loguru 0.8+ forbids changing severity of existing levels).
+for _name, _no, _color in [
+    ("GENERATION", 24, "<cyan>"),
+    ("PROMPT", 23, "<yellow>"),
+    ("INIT", 31, "<white>"),
+    ("INIT_OK", 31, "<green>"),
+    ("INIT_WARN", 31, "<yellow>"),
+    ("INIT_ERR", 31, "<red>"),
     # Messages contain important information without which this application might not be able to be used
     # As such, they have the highest priority
-    logger.level("MESSAGE", no=61, color="<green>")
+    ("MESSAGE", 61, "<green>"),
     # Stats are info that might not display well in the terminal
-    logger.level("STATS", no=19, color="<blue>")
-except TypeError:
-    pass
+    ("STATS", 19, "<blue>"),
+]:
+    try:
+        logger.level(_name)
+    except ValueError:
+        try:
+            logger.level(_name, no=_no, color=_color)
+        except (TypeError, ValueError):
+            pass
+    except TypeError:
+        pass
 
 logger.__class__.generation = partialmethod(logger.__class__.log, "GENERATION")
 logger.__class__.prompt = partialmethod(logger.__class__.log, "PROMPT")
@@ -163,6 +172,8 @@ config = {
             "filter": is_not_stats_log,
             "retention": "2 days",
             "rotation": "3 hours",
+            "enqueue": True,
+            "encoding": "utf-8",
         },
         {
             "sink": "logs/stats.log",
@@ -172,6 +183,8 @@ config = {
             "filter": is_stats_log,
             "retention": "7 days",
             "rotation": "1 days",
+            "enqueue": True,
+            "encoding": "utf-8",
         },
         {
             "sink": "logs/trace.log",
@@ -182,7 +195,9 @@ config = {
             "retention": "3 days",
             "rotation": "1 days",
             "backtrace": True,
-            "diagnose": True,
+            "diagnose": False,
+            "enqueue": True,
+            "encoding": "utf-8",
         },
     ],
 }

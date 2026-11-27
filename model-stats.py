@@ -12,6 +12,8 @@ import requests
 import yaml
 from tqdm import tqdm
 
+from worker.utils.network import request_with_retry, response_json
+
 # Location of stable horde worker bridge log
 LOG_FILE = "logs/bridge*.log"
 
@@ -53,25 +55,71 @@ class LogStats:
         return adate
 
     def get_num_lines(self, file_path):
-        with open(file_path, "r+") as fp:
-            buf = mmap.mmap(fp.fileno(), 0)
-            lines = 0
-            while buf.readline():
-                lines += 1
-            return lines
+        with open(file_path, "rb") as fp:
+            size = fp.seek(0, 2)
+            if size == 0:
+                return 0
+            fp.seek(0)
+            with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as buf:
+                lines = 0
+                while buf.readline():
+                    lines += 1
+                return lines
 
     def download_stats(self, period, model_type="img"):
         self.unused_models = []  # not relevant
 
-        req = requests.get(f"https://stablehorde.net/api/v2/stats/{model_type}/models", verify=False)
-        self.used_models = req.json()[period] if req.ok else {}
+        url = f"https://stablehorde.net/api/v2/stats/{model_type}/models"
+        with requests.Session() as session:
+            req = request_with_retry(
+                session,
+                "GET",
+                url,
+                timeout=10,
+                retries=1,
+                log_prefix="Model stats",
+            )
+        payload = response_json(req, default={})
+        if req is None:
+            print(f"Warning: failed to fetch model stats from {url}")
+            self.used_models = {}
+            return
+        if not req.ok:
+            print(f"Warning: model stats request failed ({req.status_code}) for {url}")
+            self.used_models = {}
+            return
+        if not isinstance(payload, dict):
+            print(f"Warning: unexpected model stats payload from {url}")
+            self.used_models = {}
+            return
+        if period not in payload:
+            print(f"Warning: period '{period}' not found in model stats payload from {url}")
+        period_stats = payload.get(period, {})
+        if not isinstance(period_stats, dict):
+            print(f"Warning: unexpected model stats payload for period '{period}' from {url}")
+            self.used_models = {}
+            return
+        self.used_models = period_stats
 
     def parse_log(self):
         self.used_models = {}
         # Grab any statically loaded models
-        with open("bridgeData.yaml", "rt", encoding="utf-8", errors="ignore") as configfile:
-            config = yaml.safe_load(configfile)
-        self.unused_models = config["models_to_load"]
+        try:
+            with open("bridgeData.yaml", "rt", encoding="utf-8", errors="ignore") as configfile:
+                config = yaml.safe_load(configfile)
+        except FileNotFoundError:
+            config = {}
+        if not isinstance(config, dict):
+            config = {}
+        models_to_load = config.get("models_to_load") or []
+        if isinstance(models_to_load, str):
+            models_to_load = [models_to_load]
+        if not isinstance(models_to_load, list):
+            try:
+                models_to_load = list(models_to_load)
+            except TypeError:
+                models_to_load = []
+        self.unused_models = list(models_to_load)
         # Models to exclude
         if "safety_checker" in self.unused_models:
             self.unused_models.remove("safety_checker")
@@ -88,14 +136,23 @@ class LogStats:
             return
 
         # Identify all log files and total number of log lines
-        total_log_lines = sum(self.get_num_lines(logfile) for logfile in glob.glob(self.logfile))
+        logfiles = glob.glob(self.logfile)
+        if not logfiles:
+            print("No bridge log files found; nothing to analyse.")
+            return
+        total_log_lines = sum(self.get_num_lines(logfile) for logfile in logfiles)
         progress = tqdm(total=total_log_lines, leave=True, unit=" lines", unit_scale=True)
-        for logfile in glob.glob(self.logfile):
+        # Compute date once for today/yesterday periods (avoid get_date() per-line variation if log spans a boundary)
+        if self.period in [PERIOD_TODAY, PERIOD_YESTERDAY]:
+            period_date = self.get_date()
+        else:
+            period_date = None
+        for logfile in logfiles:
             with open(logfile, "rt", encoding="UTF-8", errors="ignore") as infile:
                 for line in infile:
                     # Grab the lines we're interested in for models
                     if regex := REGEX.match(line):
-                        if self.period in [PERIOD_TODAY, PERIOD_YESTERDAY] and regex.group(1) != self.get_date():
+                        if self.period in [PERIOD_TODAY, PERIOD_YESTERDAY] and regex.group(1) != period_date:
                             continue
                         # Extract model name
                         model = regex.group(2)
@@ -114,7 +171,7 @@ class LogStats:
                     # Grab the lines we're interested in
                     if regex := KUDOS_REGEX.match(line):
                         # Extract kudis and time
-                        timestamp = regex.group(1)[:-2]  # truncate to hour
+                        timestamp = regex.group(1)[:-3]  # truncate to hour (remove ":mm")
                         kudos = regex.group(2)
                         if timestamp in self.kudos:
                             self.kudos[timestamp] += float(kudos)
@@ -135,6 +192,9 @@ class LogStats:
             return
 
         # Whats our longest model name?
+        if not self.used_models:
+            print("No model usage data found.")
+            return
         max_len = max(len(x) for x in self.used_models)
 
         scores = sorted(((self.used_models[model], model) for model in self.used_models), reverse=True)

@@ -6,6 +6,8 @@ import datetime
 import glob
 import math
 import os
+import tempfile
+import threading
 import pathlib
 import shutil
 import sys
@@ -14,6 +16,8 @@ import time
 import gradio as gr
 import requests
 import yaml
+
+from worker.utils.network import request_with_retry, response_json
 
 
 # Helper class to access dictionaries
@@ -65,7 +69,7 @@ class WebUI:
             "info": "How often, in seconds, that statistics such as kudos per hour are output to "
             "the display by the worker.",
         },
-        "threads": {
+        "max_threads": {
             "label": "Number of Threads",
             "info": "Most workers leave this at 1. "
             "This determines how many jobs will be processed simultaneously. "
@@ -247,6 +251,10 @@ class WebUI:
     def __init__(self):
         self.app = None
         self.models_found_on_disk = []
+        self._component_inputs = []
+        self._save_lock = threading.Lock()
+        self._maintenance_lock = threading.Lock()
+        self._maintenance_inflight = False
 
     def _label(self, name):
         return WebUI.INFO[name]["label"] if name in WebUI.INFO else None
@@ -280,6 +288,14 @@ class WebUI:
         with open(WebUI.CONFIG_FILE, "rt", encoding="utf-8") as configfile:
             data = yaml.safe_load(configfile)
 
+        if not isinstance(data, dict):
+            print(f"{WebUI.CONFIG_FILE} does not contain a valid configuration mapping.", file=sys.stderr)
+            data = {}
+
+        # Backward compatibility: older webui saved "threads"
+        if "max_threads" not in data and "threads" in data:
+            data["max_threads"] = data["threads"]
+
         return DotDict(data)
 
     def process_input_list(self, list):
@@ -288,60 +304,107 @@ class WebUI:
             temp = list.split(",")
             for item in temp:
                 trimmed_item = item.strip()
-                output.append(trimmed_item)
+                if trimmed_item:
+                    output.append(trimmed_item)
         return output
 
-    def save_config(self, args):
-        args = DotDict(args)
+    def save_config(self, *args):
+        with self._save_lock:
+            if len(args) == 1 and isinstance(args[0], dict):
+                values_by_component = args[0]
+            else:
+                if not self._component_inputs or len(args) != len(self._component_inputs):
+                    return f"Configuration save failed: expected {len(self._component_inputs)} inputs, got {len(args)}"
+                values_by_component = dict(zip(self._component_inputs, args))
 
-        # Grab the existing config file contents
-        config = self.reload_config()
+            # Grab the existing config file contents
+            config = self.reload_config()
 
-        # Merge values which require some pre-processing
-        skipped_keys = ["models_on_disk", "special_models_to_load", "special_top_models_to_load"]
-        models_to_load = []
-        for key, value in args.items():
-            cfgkey = self._cfg(key.label)
-            if cfgkey == "priority_usernames" or cfgkey == "blacklist" or cfgkey == "censorlist":
-                config[cfgkey] = self.process_input_list(value)
-                continue
-            if cfgkey == "ram_to_leave_free" or cfgkey == "vram_to_leave_free":
-                config[cfgkey] = str(value) + "%"
-                continue
+            # Merge values which require some pre-processing
+            skipped_keys = ["models_on_disk", "special_models_to_load", "special_top_models_to_load"]
+            models_to_load = []
+            for key, value in values_by_component.items():
+                cfgkey = self._cfg(key.label)
+                if cfgkey is None:
+                    continue
+                if cfgkey == "priority_usernames" or cfgkey == "blacklist" or cfgkey == "censorlist":
+                    config[cfgkey] = self.process_input_list(value)
+                    continue
+                if cfgkey == "ram_to_leave_free" or cfgkey == "vram_to_leave_free":
+                    config[cfgkey] = str(value) + "%"
+                    continue
 
-            if cfgkey == "special_models_to_load" or cfgkey == "models_on_disk":
-                models_to_load.extend(value)
-            elif cfgkey == "special_top_models_to_load":
-                if value and value != "None":
-                    models_to_load.append(value)
-            elif cfgkey == "models_to_load":
-                models_to_load.extend(value)
-            elif cfgkey == "dreamer_name" and (value == "An Awesome Dreamer" or not value):
-                skipped_keys.append("dreamer_name")
-            elif cfgkey == "scribe_name" and (value == "An Awesome Scribe" or not value):
-                skipped_keys.append("scribe_name")
-            elif cfgkey == "alchemist_name" and (value == "An Awesome Alchemist" or not value):
-                skipped_keys.append("alchemist_name")
+                if cfgkey in ("special_models_to_load", "models_on_disk", "models_to_load"):
+                    if isinstance(value, (list, tuple)):
+                        models_to_load.extend([v for v in value if v])
+                    elif value:
+                        models_to_load.append(value)
+                elif cfgkey == "special_top_models_to_load":
+                    if value and value != "None":
+                        models_to_load.append(value)
+                elif cfgkey == "dreamer_name" and (value == "An Awesome Dreamer" or not value):
+                    skipped_keys.append("dreamer_name")
+                elif cfgkey == "scribe_name" and (value == "An Awesome Scribe" or not value):
+                    skipped_keys.append("scribe_name")
+                elif cfgkey == "alchemist_name" and (value == "An Awesome Alchemist" or not value):
+                    skipped_keys.append("alchemist_name")
 
-            config[cfgkey] = value if cfgkey != "models_to_load" else None
+                config[cfgkey] = value
 
-        config["models_to_load"] = models_to_load
-        with open(WebUI.CONFIG_FILE, "wt", encoding="utf-8") as configfile:
-            yaml.safe_dump({k: v for k, v in config.items() if k not in skipped_keys}, configfile)
+            # Deduplicate while preserving order
+            seen = set()
+            deduped_models = []
+            for m in models_to_load:
+                if m not in seen:
+                    seen.add(m)
+                    deduped_models.append(m)
+            config["models_to_load"] = deduped_models
+            config_to_save = {k: v for k, v in config.items() if k not in skipped_keys}
+            config_dir = os.path.dirname(WebUI.CONFIG_FILE) or "."
+            fd, tmp_path = tempfile.mkstemp(dir=config_dir, prefix=".bridgeData.", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wt", encoding="utf-8") as configfile:
+                    yaml.safe_dump(
+                        config_to_save,
+                        configfile,
+                        allow_unicode=True,
+                        sort_keys=False,
+                    )
+                    configfile.flush()
+                    os.fsync(configfile.fileno())
+                os.replace(tmp_path, WebUI.CONFIG_FILE)
+                try:
+                    dir_fd = os.open(config_dir, os.O_RDONLY)
+                    try:
+                        os.fsync(dir_fd)
+                    finally:
+                        os.close(dir_fd)
+                except OSError:
+                    pass
+            finally:
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except OSError:
+                    pass
 
-        return f"Configuration Saved at {datetime.datetime.now()}"
+            return f"Configuration Saved at {datetime.datetime.now()}"
 
     def download_models(self, model_location):
-        models = None
-        try:
-            r = requests.get(model_location)
-            models = r.json()
+        with requests.Session() as session:
+            r = request_with_retry(session, "GET", model_location, timeout=15, retries=1, log_prefix="WebUI")
+        if r is None or not r.ok:
+            print(f"Failed to load models from {model_location}")
+            return None
+        models = response_json(r, default=None)
+        if isinstance(models, dict):
             print("Models downloaded successfully")
-        except Exception:
-            print("Failed to load models")
-        return models
+            return models
+        print(f"Failed to load models from {model_location}: invalid JSON")
+        return None
 
     def load_models(self):
+        self.models_found_on_disk = []
         remote_models = (
             "https://raw.githubusercontent.com/Haidra-org/AI-Horde-image-model-reference/main/stable_diffusion.json"
         )
@@ -377,55 +440,110 @@ class WebUI:
                         model_filename = key.get("path", None)
                         if model_filename and "yaml" not in model_filename:
                             break
-                    if model_filename and model_filename in all_files_in_cache:
+                    if model_filename and any(model_filename.lower() == f.lower() for f in all_files_in_cache):
                         if self.models_found_on_disk is None:
                             self.models_found_on_disk = []
                         self.models_found_on_disk.append(model_name)
-                break
-
         return sorted(latest_models, key=str.casefold)
 
-    def load_workerID(self, worker_name):
-        workerID = ""
-        workers_URL = "https://stablehorde.net/api/v2/workers"
-        r = requests.get(workers_URL)
-        worker_json = r.json()
-        for item in worker_json:
-            if item["name"] == worker_name:
-                workerID = item["id"]
-        return workerID
+    def _normalize_horde_url(self, horde_url):
+        url = (horde_url or "https://aihorde.net/").strip()
+        if not url:
+            url = "https://aihorde.net/"
+        return url.rstrip("/")
 
-    def load_worker_mode(self, worker_name):
-        worker_mode = False
-        workers_URL = "https://stablehorde.net/api/v2/workers"
-        r = requests.get(workers_URL)
-        worker_json = r.json()
-        for item in worker_json:
-            if item["name"] == worker_name:
-                worker_mode = item["maintenance_mode"]
-        return worker_mode
+    def _fetch_workers(self, horde_url="https://aihorde.net/"):
+        workers_URL = f"{self._normalize_horde_url(horde_url)}/api/v2/workers"
+        with requests.Session() as session:
+            r = request_with_retry(session, "GET", workers_URL, timeout=15, retries=1, log_prefix="WebUI")
+        if r is None or not r.ok:
+            return None
+        workers = response_json(r, default=None)
+        if isinstance(workers, list):
+            return workers
+        return None
 
-    def load_worker_stats(self, worker_name):
-        worker_stats = ""
-        workers_URL = "https://stablehorde.net/api/v2/workers"
-        r = requests.get(workers_URL)
-        worker_json = r.json()
-        for item in worker_json:
-            if item["name"] == worker_name:
-                worker_stats += "Current MPS:  " + str(item["performance"]).split()[0] + " MPS\n"
-                worker_stats += "Total Kudos Earned:  " + str(item["kudos_rewards"]) + "\n"
-                worker_stats += "Total Jobs Completed:  " + str(item["requests_fulfilled"])
+    def _find_worker(self, worker_name, horde_url="https://aihorde.net/"):
+        workers = self._fetch_workers(horde_url)
+        if workers is None:
+            return None, False
+        for item in workers:
+            if isinstance(item, dict) and item.get("name") == worker_name:
+                return item, True
+        return None, True
+
+    def load_workerID(self, worker_name, horde_url="https://aihorde.net/"):
+        worker, found = self._find_worker(worker_name, horde_url)
+        if not found:
+            return ""
+        return worker.get("id", "") if worker else ""
+
+    def load_worker_mode(self, worker_name, horde_url="https://aihorde.net/"):
+        worker, found = self._find_worker(worker_name, horde_url)
+        if not found:
+            return "Unknown"
+        if not worker:
+            return "Unknown"
+        return str(worker.get("maintenance_mode", False))
+
+    def load_worker_stats(self, worker_name, horde_url="https://aihorde.net/"):
+        worker, found = self._find_worker(worker_name, horde_url)
+        if not found:
+            return "Failed to load worker stats: API unavailable"
+        if not worker:
+            return "Failed to load worker stats: worker not found"
+        worker_stats = "Current MPS:  " + str(worker.get("performance", "0")).split()[0] + " MPS\n"
+        worker_stats += "Total Kudos Earned:  " + str(worker.get("kudos_rewards", 0)) + "\n"
+        worker_stats += "Total Jobs Completed:  " + str(worker.get("requests_fulfilled", 0))
         return worker_stats
 
-    def update_worker_mode(self, worker_name, worker_id, current_mode, apikey):
-        header = {"apikey": apikey}
-        payload = {"maintenance": False, "name": worker_name}
-        if current_mode == "False":
-            payload = {"maintenance": True, "name": worker_name}
-        worker_URL = f"https://stablehorde.net/api/v2/workers/{worker_id}"
-        requests.put(worker_URL, json=payload, headers=header)
-        state = "enabled" if payload["maintenance"] else "disabled"
-        return f"Maintenance mode is being {state}, this may take up to 30 seconds to update here. Please wait."
+    def update_worker_mode(self, worker_name, worker_id, current_mode, apikey, horde_url="https://aihorde.net/"):
+        with self._maintenance_lock:
+            if self._maintenance_inflight:
+                return "Maintenance mode update already in progress, please wait."
+            self._maintenance_inflight = True
+        try:
+            if not worker_id:
+                return "Failed to update maintenance mode: worker ID is missing"
+            if not apikey:
+                return "Failed to update maintenance mode: API key is missing"
+            mode_str = str(current_mode)
+            if mode_str not in {"True", "False"}:
+                return "Failed to update maintenance mode: current status unknown, please wait for refresh"
+            header = {"apikey": apikey}
+            payload = {"maintenance": mode_str == "False"}
+            worker_URL = f"{self._normalize_horde_url(horde_url)}/api/v2/workers/{worker_id}"
+            with requests.Session() as session:
+                r = request_with_retry(
+                    session,
+                    "PUT",
+                    worker_URL,
+                    json=payload,
+                    headers=header,
+                    timeout=15,
+                    retries=1,
+                    log_prefix="WebUI",
+                )
+            if r is None or not r.ok:
+                err = r.text if r is not None else "no response"
+                return f"Failed to update maintenance mode: {err}"
+            desired = bool(payload["maintenance"])
+            # Best-effort server-authoritative confirmation
+            worker, found = self._find_worker(worker_name, horde_url)
+            if found and worker is not None:
+                actual = worker.get("maintenance_mode")
+                if isinstance(actual, bool):
+                    if actual == desired:
+                        return f"Maintenance mode {'enabled' if actual else 'disabled'}."
+                    return (
+                        f"Maintenance mode update sent ({'enabled' if desired else 'disabled'} requested), "
+                        f"but server currently reports {'enabled' if actual else 'disabled'}. It may take a moment to converge."
+                    )
+            state = "enabled" if desired else "disabled"
+            return f"Maintenance mode is being {state}, this may take up to 30 seconds to update here. Please wait."
+        finally:
+            with self._maintenance_lock:
+                self._maintenance_inflight = False
 
     def _imgsize(self, value):
         try:
@@ -444,39 +562,51 @@ class WebUI:
         models_to_load_all = []
         models_to_load_top = "None"
         models_to_load_individual = []
-        for model in config.models_to_load:
+        for model in (config.models_to_load or []):
             if not model:
                 continue
             if model.lower().startswith("top "):
                 models_to_load_top = model.title()
             elif model.lower().startswith("all "):
                 models_to_load_all.append(model.title())
-            elif model in self.models_found_on_disk:
+            elif any(model.lower() == known.lower() for known in self.models_found_on_disk):
                 models_on_disk.append(model)
             else:
                 models_to_load_individual.append(model)
 
+        # Also load special keys for manually crafted/legacy configs
+        special_models = getattr(config, "special_models_to_load", None) or []
+        if isinstance(special_models, str):
+            special_models = [special_models]
+        for model in special_models:
+            if model and str(model).title() not in models_to_load_all:
+                models_to_load_all.append(str(model).title())
+
+        special_top = getattr(config, "special_top_models_to_load", None)
+        if special_top and str(special_top) != "None":
+            models_to_load_top = str(special_top).title()
+
         existing_priority_usernames = ""
         config.default("priority_usernames", [])
         for item in config.priority_usernames:
-            existing_priority_usernames += item
-            existing_priority_usernames += ","
+            if item:
+                existing_priority_usernames += str(item) + ","
         if len(existing_priority_usernames) > 0 and existing_priority_usernames[-1] == ",":
             existing_priority_usernames = existing_priority_usernames[:-1]
 
         existing_blacklist = ""
         config.default("blacklist", [])
         for item in config.blacklist:
-            existing_blacklist += item
-            existing_blacklist += ","
+            if item:
+                existing_blacklist += str(item) + ","
         if len(existing_blacklist) > 0 and existing_blacklist[-1] == ",":
             existing_blacklist = existing_blacklist[:-1]
 
         existing_censorlist = ""
         config.default("censorlist", [])
         for item in config.censorlist:
-            existing_censorlist += item
-            existing_censorlist += ","
+            if item:
+                existing_censorlist += str(item) + ","
         if len(existing_censorlist) > 0 and existing_censorlist[-1] == ",":
             existing_censorlist = existing_censorlist[:-1]
 
@@ -717,14 +847,14 @@ class WebUI:
                     )
 
                 with gr.Tab("Performance"), gr.Column():
-                    config.default("threads", 1)
+                    config.default("max_threads", 1)
                     max_threads = gr.Slider(
                         1,
                         8,
                         step=1,
-                        label=self._label("threads"),
+                        label=self._label("max_threads"),
                         value=config.max_threads,
-                        info=self._info("threads"),
+                        info=self._info("max_threads"),
                     )
                     config.default("queue_size", 1)
                     queue_size = gr.Slider(
@@ -790,12 +920,12 @@ class WebUI:
                     maint_message = gr.Markdown("")
                     worker_id = gr.Textbox(label="Worker ID")
                     maintenance_mode = gr.Textbox(label="Current Maintenance Mode Status")
-                    self.app.load(self.load_workerID, inputs=worker_name, outputs=worker_id, every=15)
-                    self.app.load(self.load_worker_mode, inputs=worker_name, outputs=maintenance_mode, every=15)
+                    self.app.load(self.load_workerID, inputs=[worker_name, horde_url], outputs=worker_id, every=15)
+                    self.app.load(self.load_worker_mode, inputs=[worker_name, horde_url], outputs=maintenance_mode, every=15)
 
                     maint_button.click(
                         self.update_worker_mode,
-                        inputs=[worker_name, worker_id, maintenance_mode, api_key],
+                        inputs=[worker_name, worker_id, maintenance_mode, api_key, horde_url],
                         outputs=[maint_message],
                     )
                 with gr.Tab("Scribe Options"), gr.Column():
@@ -845,52 +975,53 @@ class WebUI:
             with gr.Row():
                 message = gr.Markdown("")
 
+            self._component_inputs = [
+                alchemist_name,
+                allow_controlnet,
+                allow_img2img,
+                allow_painting,
+                allow_post_processing,
+                allow_unsafe_ip,
+                always_download,
+                api_key,
+                blacklist,
+                censor_nsfw,
+                censorlist,
+                dreamer_name,
+                dynamic_models,
+                disable_terminal_ui,
+                forms,
+                horde_url,
+                max_models_to_download,
+                max_power,
+                max_threads,
+                models_on_disk,
+                models_to_load,
+                models_to_skip,
+                cache_home,
+                nsfw,
+                number_of_dynamic_models,
+                priority_usernames,
+                queue_size,
+                temp_dir,
+                require_upfront_kudos,
+                special_models_to_load,
+                special_top_models_to_load,
+                stats_output_frequency,
+                worker_name,
+                ram_to_leave_free,
+                vram_to_leave_free,
+                scribe_name,
+                kai_url,
+                max_length,
+                max_context_length,
+                branded_model,
+                allow_lora,
+                max_lora_cache_size,
+            ]
             submit.click(
                 self.save_config,
-                inputs={
-                    alchemist_name,
-                    allow_controlnet,
-                    allow_img2img,
-                    allow_painting,
-                    allow_post_processing,
-                    allow_unsafe_ip,
-                    always_download,
-                    api_key,
-                    blacklist,
-                    censor_nsfw,
-                    censorlist,
-                    dreamer_name,
-                    dynamic_models,
-                    disable_terminal_ui,
-                    forms,
-                    horde_url,
-                    max_models_to_download,
-                    max_power,
-                    max_threads,
-                    models_on_disk,
-                    models_to_load,
-                    models_to_skip,
-                    cache_home,
-                    nsfw,
-                    number_of_dynamic_models,
-                    priority_usernames,
-                    queue_size,
-                    temp_dir,
-                    require_upfront_kudos,
-                    special_models_to_load,
-                    special_top_models_to_load,
-                    stats_output_frequency,
-                    worker_name,
-                    ram_to_leave_free,
-                    vram_to_leave_free,
-                    scribe_name,
-                    kai_url,
-                    max_length,
-                    max_context_length,
-                    branded_model,
-                    allow_lora,
-                    max_lora_cache_size,
-                },
+                inputs=self._component_inputs,
                 outputs=[message],
             )
 

@@ -1,5 +1,6 @@
 #!/bin/bash
+set -euo pipefail
 
 bin/micromamba run -r conda -n linux python generate_docker_bridge_config.py
 
-./horde-bridge.sh "$@"
+exec ./horde-bridge.sh "$@"

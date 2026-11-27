@@ -1,13 +1,23 @@
 import os
 import random
+import sys
 
 import yaml
 
 bridge_data_file = "bridgeData.yaml"
 
 if os.path.isfile(bridge_data_file):
+    try:
+        with open(bridge_data_file, "rt", encoding="utf-8", errors="ignore") as configfile:
+            existing = yaml.safe_load(configfile)
+        if not isinstance(existing, dict):
+            print(f"{bridge_data_file} exists but is not a valid mapping; refusing to overwrite.", file=sys.stderr)
+            sys.exit(1)
+    except (OSError, yaml.YAMLError) as err:
+        print(f"{bridge_data_file} exists but could not be parsed: {err}", file=sys.stderr)
+        sys.exit(1)
     print("bridgeData.yaml file already exists.")
-    exit(0)
+    sys.exit(0)
 
 
 def get_list_environment_variable(env_var_name, default_values=None):
@@ -21,17 +31,29 @@ def get_list_environment_variable(env_var_name, default_values=None):
 
 
 def get_bool_env(env_var_name, default_value):
-    value = os.getenv(env_var_name, default_value)
+    value = os.getenv(env_var_name)
+    if value is None or value == "":
+        value = default_value
+    if isinstance(value, bool):
+        return value
+    value = str(value).strip()
     if value.lower() == "false":
         return False
     if value.lower() == "true":
         return True
-    raise ValueError(f"The value of {env_var_name} must be 'true' or 'false', but was {value}.")
+    raise ValueError(f"The value of {env_var_name} must be 'true' or 'false', but was {value!r}.")
 
 
 def get_int_env(env_var_name, default_value):
-    value = os.getenv(env_var_name, default_value)
-    return int(value)
+    value = os.getenv(env_var_name)
+    if value is None or value == "":
+        value = default_value
+    if isinstance(value, bool):
+        raise ValueError(f"The value of {env_var_name} must be an integer, but was {value!r}.")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as err:
+        raise ValueError(f"The value of {env_var_name} must be an integer, but was {value!r}.") from err
 
 
 def get_worker_name():
@@ -102,6 +124,6 @@ config = {
     ),
 }
 
-with open(bridge_data_file, "w") as file:
+with open(bridge_data_file, "w", encoding="utf-8") as file:
     print("Created bridgeData.yaml")
-    yaml.dump(config, file)
+    yaml.safe_dump(config, file, allow_unicode=True, sort_keys=False)

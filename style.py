@@ -50,11 +50,12 @@ black_args = [
 ]
 ruff_args = [
     "ruff",
+    "check",
 ]
 
 if args.fix:
     print("fix requested")
-    ruff_args.extend(("check", "--fix"))
+    ruff_args.append("--fix")
 else:
     print("fix not requested")
 
@@ -68,7 +69,7 @@ lint_processes = [
 if args.debug:
     for process in lint_processes:
         VERSION_COMMAND = f"{process[0]} --version"
-        subprocess.run(VERSION_COMMAND, shell=True, check=True)
+        subprocess.run(VERSION_COMMAND, shell=True, check=False)
         print()
 
 for process_args in lint_processes:

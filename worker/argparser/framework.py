@@ -1,5 +1,6 @@
 """Arg parsing for the main script."""
 import argparse
+import threading
 
 arg_parser = argparse.ArgumentParser()
 arg_parser.add_argument(
@@ -129,6 +130,45 @@ arg_parser.add_argument(
     default=False,
     help="If specified will not check the downloaded model sha256sum.",
 )
+
+
+class LazyArgs:
+    """Parse CLI args on first access to avoid import-time side effects."""
+
+    def __init__(self, parser, *, post_parse=None):
+        object.__setattr__(self, "_parser", parser)
+        object.__setattr__(self, "_post_parse", post_parse)
+        object.__setattr__(self, "_parsed", None)
+        object.__setattr__(self, "_lock", threading.Lock())
+
+    def _ensure_parsed(self):
+        parsed = object.__getattribute__(self, "_parsed")
+        if parsed is not None:
+            return parsed
+        lock = object.__getattribute__(self, "_lock")
+        with lock:
+            parsed = object.__getattribute__(self, "_parsed")
+            if parsed is None:
+                parser = object.__getattribute__(self, "_parser")
+                parsed = parser.parse_args()
+                post_parse = object.__getattribute__(self, "_post_parse")
+                if post_parse is not None:
+                    post_parse(parsed)
+                object.__setattr__(self, "_parsed", parsed)
+        return parsed
+
+    def __getattr__(self, name):
+        return getattr(self._ensure_parsed(), name)
+
+    def __setattr__(self, name, value):
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+            return
+        setattr(self._ensure_parsed(), name, value)
+
+    def __repr__(self):
+        parsed = object.__getattribute__(self, "_parsed")
+        return f"LazyArgs(parsed={parsed!r})"
 
 
 # This args must be parsed in the extended class

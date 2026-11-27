@@ -1,5 +1,6 @@
 import os
 import pathlib
+import sys
 
 from worker.utils.set_envs import get_models_to_load, set_worker_env_vars_from_config
 
@@ -17,7 +18,7 @@ if AIWORKER_CACHE_HOME is None:
     print("AIWORKER_CACHE_HOME is not set.")
     print("Please set `cache_home` in your bridge data to the directory where you want to store models.")
     print("Or, set AIWORKER_CACHE_HOME in your environment variables.")
-    exit(1)
+    sys.exit(1)
 cache_home_path = pathlib.Path(AIWORKER_CACHE_HOME).resolve()
 
 SharedModelManager.load_model_managers(
@@ -34,7 +35,7 @@ SharedModelManager.load_model_managers(
 )
 if SharedModelManager.manager.compvis is None:
     print("CompVis model manager is not loaded.")
-    exit(1)
+    sys.exit(1)
 
 
 def preload_models():
@@ -66,7 +67,11 @@ def preload_models():
         f"This is going to download {len(models_to_download)} models. They are at least 2gb each. Are you sure? (y/n)",
     )
 
-    if input() != "y":
+    try:
+        answer = input()
+    except EOFError:
+        answer = "n"
+    if answer != "y":
         return
 
     for model_name in models_to_download:
@@ -74,9 +79,13 @@ def preload_models():
         if not SharedModelManager.manager.compvis.download_model(model_name):
             print(f"Failed to download {model_name}.")
             continue
-        SharedModelManager.manager.compvis.load(model_name)
-        SharedModelManager.manager.compvis.move_to_disk_cache(model_name)
-        SharedModelManager.manager.compvis.unload_model(model_name)
+        if not SharedModelManager.manager.compvis.load(model_name):
+            print(f"Failed to load {model_name} after download.")
+            continue
+        if not SharedModelManager.manager.compvis.move_to_disk_cache(model_name):
+            print(f"Warning: failed to move {model_name} to disk cache.")
+        if not SharedModelManager.manager.compvis.unload_model(model_name):
+            print(f"Warning: failed to unload {model_name}.")
         print(f"Downloaded {model_name}.")
 
 
@@ -88,23 +97,37 @@ def build_cache(models):
     print("This is going to write at least 2.2 gb per model to your tmp_dir.")
     tmp_dir = os.environ.get("AIWORKER_TEMP_DIR", "./tmp")
     print(f"tmp_dir: {tmp_dir}")
-    models_num = len(SharedModelManager.manager.available_models)
+    configured = set(get_models_to_load())
+    models_list = [m for m in list(models) if m in configured]
+    if not models_list:
+        print("No configured models to build cache for.")
+        return
+    models_num = len(models_list)
     print(f"Models to build cache for: {models_num}")
     print("Are you sure? (y/n)")
-    if input() != "y":
+    try:
+        answer = input()
+    except EOFError:
+        answer = "n"
+    if answer != "y":
         return
 
-    for downloaded_model in models:
+    for downloaded_model in models_list:
         if SharedModelManager.manager.compvis.have_model_cache(downloaded_model):
             continue
 
-        if not SharedModelManager.manager.compvis.load(downloaded_model):  # noqa: SIM102
-            if not SharedModelManager.manager.download_model(downloaded_model):
+        if not SharedModelManager.manager.compvis.load(downloaded_model):
+            if not SharedModelManager.manager.compvis.download_model(downloaded_model):
                 print(f"Failed to download {downloaded_model}.")
                 continue
+            if not SharedModelManager.manager.compvis.load(downloaded_model):
+                print(f"Failed to load {downloaded_model} after download.")
+                continue
         print(f"Building cache for {downloaded_model}...")
-        SharedModelManager.manager.compvis.move_to_disk_cache(downloaded_model)
-        SharedModelManager.manager.compvis.unload_model(downloaded_model)
+        if not SharedModelManager.manager.compvis.move_to_disk_cache(downloaded_model):
+            print(f"Warning: failed to move {downloaded_model} to disk cache.")
+        if not SharedModelManager.manager.compvis.unload_model(downloaded_model):
+            print(f"Warning: failed to unload {downloaded_model}.")
 
 
 if __name__ == "__main__":
