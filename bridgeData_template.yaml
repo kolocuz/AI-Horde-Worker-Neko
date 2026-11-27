@@ -3,7 +3,7 @@
 # The horde url
 horde_url: "https://aihorde.net"
 # Give a cool name to your instance
-worker_name: "An Awesome AI Horde Worker"
+worker_name: "An Awesome Horde Worker Neko"
 # The api_key identifies a unique user in the horde
 # Visit https://stablehorde.net/register to create one before you can join
 api_key: "0000000000"

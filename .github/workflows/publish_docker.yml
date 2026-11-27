@@ -5,7 +5,7 @@ on:
 
 jobs:
   build-publish-worker-docker:
-    name: AI Horde Worker Docker Container
+    name: Horde Worker Neko Docker Container
     runs-on: ubuntu-latest
     steps:
     - name: "✔️ Checkout"
@@ -24,10 +24,10 @@ jobs:
         tool-cache: false
     - name: "Build and Publish Container to Github Container Registry"
       run: |
-        docker build -t ghcr.io/db0/ai-horde-worker:${{ github.ref_name }} .
-        docker push ghcr.io/db0/ai-horde-worker:${{ github.ref_name }}
+        docker build -t ghcr.io/kolocuz/ai-horde-worker-neko:${{ github.ref_name }} .
+        docker push ghcr.io/kolocuz/ai-horde-worker-neko:${{ github.ref_name }}
     - name: Inform with Discord Webhook
       uses: tsickert/discord-webhook@v5.3.0
       with:
         webhook-url: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        content: "New version of AI Horde Worker Docker Container has been released: ghcr.io/db0/ai-horde-worker:${{ github.ref_name }}."
+        content: "New version of Horde Worker Neko Docker Container has been released: ghcr.io/kolocuz/ai-horde-worker-neko:${{ github.ref_name }}."

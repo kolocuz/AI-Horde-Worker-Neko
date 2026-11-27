@@ -617,7 +617,7 @@ class WebUI:
                 css = cssfile.read()
 
         with gr.Blocks(css=css) as self.app:
-            gr.Markdown("# AI Horde Worker Configuration")
+            gr.Markdown("# Horde Worker Neko Configuration")
 
             with gr.Row():
                 with gr.Tab("Basic Settings"), gr.Column():

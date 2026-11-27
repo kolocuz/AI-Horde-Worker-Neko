@@ -1,6 +1,6 @@
-This repository allows you to set up a AI Horde Worker to run a scribe or alchemy worker for the AI Horde.
+This repository allows you to set up a Horde Worker Neko to run a scribe or alchemy worker for the AI Horde.
 
-# AI Horde Worker
+# Horde Worker Neko
 
 > **Fork:** [kolocuz/AI-Horde-Worker-Neko](https://github.com/kolocuz/AI-Horde-Worker-Neko) (upstream: [Haidra-Org/AI-Horde-Worker](https://github.com/Haidra-Org/AI-Horde-Worker))
 
@@ -130,7 +130,7 @@ First step: Shut down your worker by putting it into maintenance, and then press
 Use this approach if you cloned the original repository using `git clone`
 
 1. Open a or `bash`, `git bash`, `cmd`, or `powershell` terminal depending on your OS
-1. Navigate to the folder you have the AI Horde Worker repository installed if you're not already there.
+1. Navigate to the folder you have the Horde Worker Neko repository installed if you're not already there.
 1. run `git pull`
 1. continue with [Running](#running) instructions above
 
@@ -143,7 +143,7 @@ Use this approach if you downloaded the git repository as a zip file and extract
 
 1. delete the `worker/` directory from your folder
 1. Download the [repository from github as a zip file](https://github.com/kolocuz/AI-Horde-Worker-Neko/archive/refs/heads/main.zip)
-1. Extract its contents into the same the folder you have the AI Horde Worker repository installed, overwriting any existing files
+1. Extract its contents into the same the folder you have the Horde Worker Neko repository installed, overwriting any existing files
 1. continue with [Running](#running) instructions above
 
 

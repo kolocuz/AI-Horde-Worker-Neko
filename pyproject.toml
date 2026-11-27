@@ -54,7 +54,7 @@ version = "1.0.0"
 authors = [
     { name="db0", email="mail@dbzer0.com" },
 ]
-description = "Stable Horde Bridge"
+description = "Horde Worker Neko - AI Horde bridge worker"
 readme = "README.md"
 license = { file="LICENSE" }
 dynamic = ["dependencies"]
