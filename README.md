@@ -2,6 +2,8 @@ This repository allows you to set up a AI Horde Worker to run a scribe or alchem
 
 # AI Horde Worker
 
+> **Fork:** [kolocuz/AI-Horde-Worker-Neko](https://github.com/kolocuz/AI-Horde-Worker-Neko) (upstream: [Haidra-Org/AI-Horde-Worker](https://github.com/Haidra-Org/AI-Horde-Worker))
+
 ## Warning for Image Generation:
 
 > As of January 2024, the official worker for image generation is now [horde-worker-reGen](https://github.com/Haidra-Org/horde-worker-reGen).
@@ -34,7 +36,7 @@ This option is recommended as it will make keeping your repository up to date mu
 
 1. Use your start menu to open `git GUI`
 1. Select "Clone Existing Repository".
-1. In the Source location put `https://github.com/Haidra-Org/AI-Horde-Worker.git`
+1. In the Source location put `https://github.com/kolocuz/AI-Horde-Worker-Neko.git`
 1. In the target directory, browse to any folder you want to put the horde worker folder.
 1. Press `Clone`
 1. In the new window that opens up, on the top menu, go to `Repository > Git Bash`. A new terminal window will open.
@@ -44,7 +46,7 @@ This option is recommended as it will make keeping your repository up to date mu
 
 Use these instructions if you do not have git for windows and do not want to install it. These instructions make updating the worker a bit more difficult down the line.
 
-1. Download [the zipped version](https://github.com/Haidra-Org/AI-Horde-Worker/archive/refs/heads/main.zip)
+1. Download [the zipped version](https://github.com/kolocuz/AI-Horde-Worker-Neko/archive/refs/heads/main.zip)
 1. Extract it to any folder of your choice
 1. continue with the [Running](#running) instructions
 
@@ -55,7 +57,7 @@ This assumes you have git installed
 Open a bash terminal and run these commands (just copy-paste them all together)
 
 ```bash
-git clone https://github.com/Haidra-Org/AI-Horde-Worker.git
+git clone https://github.com/kolocuz/AI-Horde-Worker-Neko.git
 cd AI-Horde-Worker
 ```
 
@@ -140,7 +142,7 @@ Use this approach if you downloaded the git repository as a zip file and extract
 
 
 1. delete the `worker/` directory from your folder
-1. Download the [repository from github as a zip file](https://github.com/db0/AI-Horde-Worker/archive/refs/heads/main.zip)
+1. Download the [repository from github as a zip file](https://github.com/kolocuz/AI-Horde-Worker-Neko/archive/refs/heads/main.zip)
 1. Extract its contents into the same the folder you have the AI Horde Worker repository installed, overwriting any existing files
 1. continue with [Running](#running) instructions above
 

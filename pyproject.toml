@@ -66,8 +66,9 @@ classifiers = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/Haidra-Org/AI-Horde-Worker"
-"Bug Tracker" = "https://github.com/Haidra-Org/AI-Horde-Worker"
+"Homepage" = "https://github.com/kolocuz/AI-Horde-Worker-Neko"
+"Bug Tracker" = "https://github.com/kolocuz/AI-Horde-Worker-Neko/issues"
+"Upstream" = "https://github.com/Haidra-Org/AI-Horde-Worker"
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
