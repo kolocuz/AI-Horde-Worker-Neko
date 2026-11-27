@@ -1,5 +1,8 @@
+# Technical compatibility version for AI Horde model min_bridge_version checks.
+# Keep >= upstream compat level; do not use as fork display version.
 BRIDGE_VERSION = 24
-RELEASE = f"{BRIDGE_VERSION}.0.7"
+# Fork display/release version: 1.x.y = classic, 2.x.y = modern, minor=features, patch=fixes.
+RELEASE = "1.0.0"
 BRIDGE_CONFIG_FILE = "bridgeData.yaml"
 KNOWN_UPSCALERS = {
     "RealESRGAN_x4plus",

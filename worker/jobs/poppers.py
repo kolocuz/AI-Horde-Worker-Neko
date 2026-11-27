@@ -7,7 +7,7 @@ from io import BytesIO
 import requests
 from PIL import Image, UnidentifiedImageError
 
-from worker.consts import BRIDGE_VERSION, KNOWN_INTERROGATORS, KNOWN_POST_PROCESSORS, POST_PROCESSORS_HORDELIB_MODELS
+from worker.consts import BRIDGE_VERSION, KNOWN_INTERROGATORS, KNOWN_POST_PROCESSORS, POST_PROCESSORS_HORDELIB_MODELS, RELEASE
 from worker.logger import logger
 from worker.stats import bridge_stats
 from worker.utils.network import request_with_retry
@@ -21,11 +21,11 @@ class JobPopper:
     def __init__(self, mm, bd):
         self.model_manager = mm
         self.bridge_data = copy.deepcopy(bd)
-        self.bridge_agent = f"Horde Worker Neko v25:{BRIDGE_VERSION}:https://github.com/kolocuz/AI-Horde-Worker-Neko/releases/tag/classic"
+        self.bridge_agent = f"Horde Worker Neko:{RELEASE}:https://github.com/kolocuz/AI-Horde-Worker-Neko/releases/tag/classic"
         backend_engine = getattr(self.bridge_data, "backend_engine", None)
         if backend_engine and str(backend_engine).lower() != "unknown":
             self.bridge_agent = (
-                f"Horde Worker Neko v25~{backend_engine}:{BRIDGE_VERSION}:https://github.com/kolocuz/AI-Horde-Worker-Neko/releases/tag/classic"
+                f"Horde Worker Neko~{backend_engine}:{RELEASE}:https://github.com/kolocuz/AI-Horde-Worker-Neko/releases/tag/classic"
             )
         self.pop = None
         self.headers = {"apikey": self.bridge_data.api_key}

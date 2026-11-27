@@ -39,8 +39,7 @@ jobs:
           minor=$(echo ${version} | cut -d '.' -f 2)
           patch=$(echo ${version} | cut -d '.' -f 3)
 
-          sed -i "s/^BRIDGE_VERSION = .*/BRIDGE_VERSION = ${major}/g" ./worker/consts.py
-          sed -i "s/^RELEASE = f\"{BRIDGE_VERSION}.*\"/RELEASE = f\"{BRIDGE_VERSION}.${minor}.${patch}\"/g" ./worker/consts.py
+          sed -i "s/^RELEASE = .*/RELEASE = \"${major}.${minor}.${patch}\"/g" ./worker/consts.py
           git config user.email github-actions@github.com
           git config user.name github-actions
           git commit -am 'version incremented'
