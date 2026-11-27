@@ -21,11 +21,11 @@ class JobPopper:
     def __init__(self, mm, bd):
         self.model_manager = mm
         self.bridge_data = copy.deepcopy(bd)
-        self.bridge_agent = f"AI Horde Worker:{BRIDGE_VERSION}:https://github.com/db0/AI-Horde-Worker"
+        self.bridge_agent = f"Horde Worker Neko v25:{BRIDGE_VERSION}:https://github.com/kolocuz/AI-Horde-Worker-Neko/releases/tag/classic"
         backend_engine = getattr(self.bridge_data, "backend_engine", None)
         if backend_engine and str(backend_engine).lower() != "unknown":
             self.bridge_agent = (
-                f"AI Horde Worker~{backend_engine}:{BRIDGE_VERSION}:https://github.com/db0/AI-Horde-Worker"
+                f"Horde Worker Neko v25~{backend_engine}:{BRIDGE_VERSION}:https://github.com/kolocuz/AI-Horde-Worker-Neko/releases/tag/classic"
             )
         self.pop = None
         self.headers = {"apikey": self.bridge_data.api_key}
