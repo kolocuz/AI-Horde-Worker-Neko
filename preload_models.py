@@ -7,7 +7,9 @@ from worker.utils.set_envs import get_models_to_load, set_worker_env_vars_from_c
 set_worker_env_vars_from_config()  # Get `cache_home` from `bridgeConfig.yaml` into the environment variable
 
 import hordelib  # noqa: E402
+from worker.utils.transformers_compat import patch_transformers_modeling_utils  # noqa: E402
 
+patch_transformers_modeling_utils()
 hordelib.initialise()
 
 from hordelib.shared_model_manager import MODEL_CATEGORY_NAMES, SharedModelManager  # noqa: E402

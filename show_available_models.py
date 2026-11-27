@@ -4,7 +4,9 @@ import sys
 
 # isort: off
 import hordelib
+from worker.utils.transformers_compat import patch_transformers_modeling_utils
 
+patch_transformers_modeling_utils()
 hordelib.initialise()
 
 from hordelib.horde import SharedModelManager  # noqa: E402
