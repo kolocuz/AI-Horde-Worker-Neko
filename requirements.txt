@@ -4,7 +4,8 @@ xformers>=0.0.20,<0.0.28
 Pillow>=10.4.0,<11.0.0 # gradio 4.44.x requires <11
 pydantic>=1.10.27,<2.0.0 # keep v1 API compatibility
 horde_model_reference>=0.2.3,<0.3.0 # hordelib 1.6.6 requires ~=0.2.0
-transformers>=4.45.0,<4.58.0 # stay on 4.x for torch/cu118 classic
+transformers>=4.45.0,<4.47.0 # 4.47+ moves apply_chunking_to_forward out of modeling_utils; keep direct compat with clipfree/hordelib
+tokenizers>=0.20.0,<0.21.0 # required by transformers <4.47
 rembg[cpu]>=2.0.69,<2.1.0 # 2.0.88+ requires py>=3.11
 hordelib>=1.6.6,<2.0.0 # major v2 migration not safe in classic
 gradio>=3.50.2,<4.0.0 # gradio 4.x requires pydantic v2; classic uses pydantic v1

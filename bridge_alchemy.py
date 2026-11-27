@@ -8,9 +8,6 @@ from worker.utils.set_envs import set_worker_env_vars_from_config
 
 set_worker_env_vars_from_config()  # Get `cache_home` from `bridgeconfig.yaml` into the environment variable
 import hordelib
-from worker.utils.transformers_compat import patch_transformers_modeling_utils
-
-patch_transformers_modeling_utils()
 
 # We need to remove these, to avoid comfyUI trying to use them
 hordelib.initialise()
