@@ -579,18 +579,23 @@ class TerminalUI:
         if download_total:
             label = download_label or "Downloading"
             x = footer_x
-            self.print(self.main, footer_y, x, label)
-            x += len(label) + 1
             current = download_current or 0
             try:
                 percentage_done = min(max(current / download_total, 0.0), 1.0)
             except Exception:
                 percentage_done = 0.0
-            bar_width = max(10, self.width - (x + 2))
+            pct_text = f"{int(round(percentage_done * 100))}%"
+            # Format: TEXT | progress bar | percent
+            prefix = f"{label} | "
+            suffix = f" | {pct_text}"
+            self.print(self.main, footer_y, x, prefix)
+            x += len(prefix)
+            bar_width = max(10, footer_width - len(prefix) - len(suffix))
             done_in_chars = round(bar_width * percentage_done)
-            progress = TerminalUI.ART["progress"] * done_in_chars
+            progress = (TerminalUI.ART["progress"] * done_in_chars) + ("░" * max(0, bar_width - done_in_chars))
             colour = curses.color_pair(TerminalUI.COLOUR_GREEN)
             self.print(self.main, footer_y, x, progress[:bar_width], colour)
+            self.print(self.main, footer_y, x + bar_width, suffix)
         else:
             state = bridge_stats.get_worker_state()
             kind = state.get("kind", "idle")
