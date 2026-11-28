@@ -10,6 +10,7 @@ KNOWN_UPSCALERS = {
     "RealESRGAN_x4plus_anime_6B",
     "NMKD_Siax",
     "4x_AnimeSharp",
+    "4x_NMKD_Superscale_SP",
 }
 KNOWN_FACE_FIXERS = {
     "GFPGAN",

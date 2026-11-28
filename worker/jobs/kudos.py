@@ -46,6 +46,7 @@ class KudosModel:
     # sensible defaults.
     KNOWN_POST_PROCESSORS = [
         "4x_AnimeSharp",
+        "4x_NMKD_Superscale_SP",
         "CodeFormers",
         "GFPGAN",
         "NMKD_Siax",
