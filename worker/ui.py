@@ -434,7 +434,7 @@ class TerminalUI:
         self.draw_line(self.main, row_total, "Worker Total")
         self.draw_line(self.main, row_horde, "Entire Horde")
         self.print(self.main, row_local, 2, f"{self.worker_name}")
-        self.print(self.main, row_local, self.width - 8, f"{self.commit_hash[:6]}")
+        self.print(self.main, row_local, self.width - 8, f"{self.commit_hash[:7]}")
         self.print(self.main, row_local, self.width - 19, f"({self.get_hordelib_version()})")
 
         label(row_local + 1, col_left, "Uptime:")
