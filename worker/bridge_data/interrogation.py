@@ -43,21 +43,9 @@ class InterrogationBridgeData(BridgeDataTemplate):
             if "nsfw" in self.forms:
                 required_models.add("safety_checker")
             if "caption" in self.forms:
-                # Load preferred caption model first; keep base BLIP as fallback only when already present.
-                preferred_caption = "BLIP_Large" if "BLIP_Large" in KNOWN_CAPTION_MODELS else next(iter(KNOWN_CAPTION_MODELS), None)
-                if preferred_caption:
-                    required_models.add(preferred_caption)
-                for model in KNOWN_CAPTION_MODELS:
-                    if model in self.model_names:
-                        required_models.add(model)
+                required_models.update(KNOWN_CAPTION_MODELS)
             if "interrogation" in self.forms:
-                # Load preferred CLIP interrogator first; avoid eagerly loading heavy fallbacks on low VRAM.
-                preferred_clip = "ViT-L/14" if "ViT-L/14" in KNOWN_CLIP_INTERROGATORS else next(iter(KNOWN_CLIP_INTERROGATORS), None)
-                if preferred_clip:
-                    required_models.add(preferred_clip)
-                for model in KNOWN_CLIP_INTERROGATORS:
-                    if model in self.model_names:
-                        required_models.add(model)
+                required_models.update(KNOWN_CLIP_INTERROGATORS)
             if "post-process" in self.forms:
                 required_models.update(POST_PROCESSORS_HORDELIB_MODELS)
 
