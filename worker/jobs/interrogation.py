@@ -9,7 +9,12 @@ from hordelib.blip.caption import Caption
 from hordelib.clip.interrogate import Interrogator
 from hordelib.safety_checker import is_image_nsfw
 
-from worker.consts import KNOWN_POST_PROCESSORS, KNOWN_UPSCALERS
+from worker.consts import (
+    KNOWN_CAPTION_MODELS,
+    KNOWN_CLIP_INTERROGATORS,
+    KNOWN_POST_PROCESSORS,
+    KNOWN_UPSCALERS,
+)
 from worker.enums import JobStatus
 from worker.jobs.framework import HordeJobFramework
 from worker.logger import logger
@@ -67,9 +72,13 @@ class InterrogationHordeJob(HordeJobFramework):
                 return
         else:
             if self.current_form == "caption":
-                blip_model = self.model_manager.loaded_models.get("BLIP_Large")
+                blip_model_name = next(
+                    (name for name in ("BLIP_Large", "BLIP") if self.model_manager.loaded_models.get(name) is not None),
+                    None,
+                )
+                blip_model = self.model_manager.loaded_models.get(blip_model_name) if blip_model_name else None
                 if blip_model is None:
-                    logger.error("BLIP_Large model is not loaded; cannot process caption form. Skipping!")
+                    logger.error("No caption model loaded (expected one of {}); cannot process caption form. Skipping!", sorted(KNOWN_CAPTION_MODELS))
                     self.fault(submit=True)
                     return
                 interrogator = Caption(
@@ -87,9 +96,13 @@ class InterrogationHordeJob(HordeJobFramework):
                     "repetition_penalty": self.current_payload.get("repetition_penalty", 1.4),
                 }
             if self.current_form == "interrogation":
-                clip_model = self.model_manager.loaded_models.get("ViT-L/14")
+                clip_model_name = next(
+                    (name for name in ("ViT-L/14", "coca_ViT-L-14") if self.model_manager.loaded_models.get(name) is not None),
+                    None,
+                )
+                clip_model = self.model_manager.loaded_models.get(clip_model_name) if clip_model_name else None
                 if clip_model is None:
-                    logger.error("ViT-L/14 model is not loaded; cannot process interrogation form. Skipping!")
+                    logger.error("No interrogation CLIP model loaded (expected one of {}); cannot process interrogation form. Skipping!", sorted(KNOWN_CLIP_INTERROGATORS))
                     self.fault(submit=True)
                     return
                 interrogator = Interrogator(

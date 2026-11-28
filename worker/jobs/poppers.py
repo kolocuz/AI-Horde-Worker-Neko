@@ -7,7 +7,15 @@ from io import BytesIO
 import requests
 from PIL import Image, UnidentifiedImageError
 
-from worker.consts import BRIDGE_VERSION, KNOWN_INTERROGATORS, KNOWN_POST_PROCESSORS, POST_PROCESSORS_HORDELIB_MODELS, RELEASE
+from worker.consts import (
+    BRIDGE_VERSION,
+    KNOWN_CAPTION_MODELS,
+    KNOWN_CLIP_INTERROGATORS,
+    KNOWN_INTERROGATORS,
+    KNOWN_POST_PROCESSORS,
+    POST_PROCESSORS_HORDELIB_MODELS,
+    RELEASE,
+)
 from worker.logger import logger
 from worker.stats import bridge_stats
 from worker.utils.network import request_with_retry
@@ -298,11 +306,11 @@ class InterrogationPopper(JobPopper):
         self.endpoint = "/api/v2/interrogate/pop"
         available_forms = []
         self.available_models = self.model_manager.get_loaded_models_names()
-        if "BLIP_Large" in self.available_models:
+        if any(model in self.available_models for model in KNOWN_CAPTION_MODELS):
             available_forms.append("caption")
         if "safety_checker" in self.available_models:
             available_forms.append("nsfw")
-        if "ViT-L/14" in self.available_models:
+        if any(model in self.available_models for model in KNOWN_CLIP_INTERROGATORS):
             available_forms.append("interrogation")
         if "post-process" in self.bridge_data.forms:
             available_forms.extend(list(KNOWN_POST_PROCESSORS))

@@ -3,7 +3,12 @@ import os
 
 from worker.argparser.interrogation import args
 from worker.bridge_data.framework import BridgeDataTemplate
-from worker.consts import POST_PROCESSORS_HORDELIB_MODELS
+from worker.consts import (
+    KNOWN_CAPTION_MODELS,
+    KNOWN_CLIP_INTERROGATORS,
+    KNOWN_INTERROGATORS,
+    POST_PROCESSORS_HORDELIB_MODELS,
+)
 from worker.logger import logger
 
 
@@ -38,16 +43,16 @@ class InterrogationBridgeData(BridgeDataTemplate):
             if "nsfw" in self.forms:
                 required_models.add("safety_checker")
             if "caption" in self.forms:
-                required_models.add("BLIP_Large")
+                required_models.update(KNOWN_CAPTION_MODELS)
             if "interrogation" in self.forms:
-                required_models.add("ViT-L/14")
+                required_models.update(KNOWN_CLIP_INTERROGATORS)
             if "post-process" in self.forms:
                 required_models.update(POST_PROCESSORS_HORDELIB_MODELS)
 
-            managed_models = {"safety_checker", "BLIP_Large", "ViT-L/14", *POST_PROCESSORS_HORDELIB_MODELS}
+            managed_models = {"safety_checker", *KNOWN_INTERROGATORS, *POST_PROCESSORS_HORDELIB_MODELS}
             self.model_names = [model for model in self.model_names if model not in managed_models or model in required_models]
 
-            for required in ("safety_checker", "BLIP_Large", "ViT-L/14"):
+            for required in ["safety_checker", *sorted(KNOWN_INTERROGATORS)]:
                 if required in required_models and required not in self.model_names:
                     self.model_names.append(required)
             if "post-process" in self.forms:

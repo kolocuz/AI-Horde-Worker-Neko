@@ -2,7 +2,7 @@
 # Keep >= upstream compat level; do not use as fork display version.
 BRIDGE_VERSION = 24
 # Fork display/release version: 1.x.y = classic, 2.x.y = modern, minor=features, patch=fixes.
-RELEASE = "1.0.1"
+RELEASE = "1.0.2"
 BRIDGE_CONFIG_FILE = "bridgeData.yaml"
 KNOWN_UPSCALERS = {
     "RealESRGAN_x4plus",
@@ -20,6 +20,12 @@ POST_PROCESSORS_HORDELIB_MODELS = KNOWN_UPSCALERS | KNOWN_FACE_FIXERS
 KNOWN_POST_PROCESSORS = POST_PROCESSORS_HORDELIB_MODELS | {
     "strip_background",
 }
-KNOWN_INTERROGATORS = {
-    "ViT-L/14",
+KNOWN_CAPTION_MODELS = {
+    "BLIP_Large",
+    "BLIP",
 }
+KNOWN_CLIP_INTERROGATORS = {
+    "ViT-L/14",
+    "coca_ViT-L-14",
+}
+KNOWN_INTERROGATORS = KNOWN_CAPTION_MODELS | KNOWN_CLIP_INTERROGATORS
