@@ -282,7 +282,6 @@ class StableDiffusionHordeJob(HordeJobFramework):
             "RealESRGAN_x4plus_anime_6B",
             "NMKD_Siax",
             "4x_AnimeSharp",
-            "4x_NMKD_Superscale_SP",
         }
         has_esrgan = any(pp in esrgan_upscalers for pp in post_processors)
         self.upload_quality = 95 if self.r2_upload else (45 if has_esrgan else 75)

@@ -2,7 +2,7 @@
 # Keep >= upstream compat level; do not use as fork display version.
 BRIDGE_VERSION = 24
 # Fork display/release version: 1.x.y = classic, 2.x.y = modern, minor=features, patch=fixes.
-RELEASE = "1.0.2"
+RELEASE = "1.0.3"
 BRIDGE_CONFIG_FILE = "bridgeData.yaml"
 KNOWN_UPSCALERS = {
     "RealESRGAN_x4plus",
@@ -10,7 +10,6 @@ KNOWN_UPSCALERS = {
     "RealESRGAN_x4plus_anime_6B",
     "NMKD_Siax",
     "4x_AnimeSharp",
-    "4x_NMKD_Superscale_SP",
 }
 KNOWN_FACE_FIXERS = {
     "GFPGAN",

@@ -38,7 +38,6 @@ KNOWN_POST_PROCESSORS = {
     "RealESRGAN_x4plus_anime_6B": hordelib.image_upscale,
     "NMKD_Siax": hordelib.image_upscale,
     "4x_AnimeSharp": hordelib.image_upscale,
-    "4x_NMKD_Superscale_SP": hordelib.image_upscale,
     "strip_background": strip_background,
     "GFPGAN": hordelib.image_facefix,
     "CodeFormers": hordelib.image_facefix,
@@ -52,7 +51,7 @@ def post_process(model, image, strength=1.0):
         strength = float(strength)
     except (TypeError, ValueError):
         strength = 1.0
-    if strength != 1.0 and model in {"RealESRGAN_x4plus", "RealESRGAN_x2plus", "RealESRGAN_x4plus_anime_6B", "NMKD_Siax", "4x_AnimeSharp", "4x_NMKD_Superscale_SP", "GFPGAN", "CodeFormers"}:
+    if strength != 1.0 and model in {"RealESRGAN_x4plus", "RealESRGAN_x2plus", "RealESRGAN_x4plus_anime_6B", "NMKD_Siax", "4x_AnimeSharp", "GFPGAN", "CodeFormers"}:
         logger.debug(f"Post processor {model} received strength={strength}, but current hordelib pipeline does not apply it; using processor default.")
     if model not in KNOWN_POST_PROCESSORS:
         logger.warning(f"Post processor {model} is unknown. Returning original image")
